@@ -1,7 +1,7 @@
 import { Page, expect } from '@playwright/test';
 import OpenAI from 'openai';
 import * as dotenv from 'dotenv';
-import { sendFeishuMessage } from './feishu-bot';
+import { sendHealNotification } from './feishu-bot';
 
 dotenv.config();
 
@@ -9,6 +9,10 @@ const openai = new OpenAI({
   apiKey: process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY,
   baseURL: 'https://api.deepseek.com',
 });
+
+function stripAnsi(str: string): string {
+  return str.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '').replace(/\[[\d;]*m/g, '');
+}
 
 /**
  * AI-powered self-healing click wrapper.
@@ -66,11 +70,13 @@ Rules:
         console.info(`[AI Healer] AI suggested new locator: ${healedLocator}`);
         
         // Notify Feishu
-        await sendFeishuMessage(
-          'Self-Healing Triggered',
-          `Locator failure for "${description}".\nOriginal: ${locatorStr}\nHealed: ${healedLocator}`,
-          'warning'
-        );
+        await sendHealNotification({
+          title: '自愈触发（点击）',
+          status: 'warning',
+          description,
+          originalLocator: locatorStr,
+          healedLocator,
+        });
 
         // 3. Retry with healed locator
         await page.locator(healedLocator).click({ timeout: 10000 });
@@ -80,11 +86,13 @@ Rules:
       }
     } catch (aiError) {
       console.error(`[AI Healer] Self-healing failed: ${aiError.message}`);
-      await sendFeishuMessage(
-        'Self-Healing Failed',
-        `Failed to heal locator for "${description}". Error: ${aiError.message}`,
-        'error'
-      );
+      await sendHealNotification({
+        title: '自愈失败（点击）',
+        status: 'error',
+        description,
+        originalLocator: locatorStr,
+        errorDetail: stripAnsi(aiError.message),
+      });
       throw error; // Re-throw the original Playwright error
     }
   }
@@ -145,11 +153,13 @@ Rules:
         console.info(`[AI Healer] AI suggested new locator: ${healedLocator}`);
 
         // Notify Feishu
-        await sendFeishuMessage(
-          'Self-Healing Triggered (Assert)',
-          `Assertion failure for "${description}".\nOriginal: ${locatorStr}\nHealed: ${healedLocator}`,
-          'warning'
-        );
+        await sendHealNotification({
+          title: '自愈触发（断言）',
+          status: 'warning',
+          description,
+          originalLocator: locatorStr,
+          healedLocator,
+        });
 
         // 3. Retry assertion with healed locator
         const healedLoc = page.locator(healedLocator);
@@ -160,11 +170,13 @@ Rules:
       }
     } catch (aiError) {
       console.error(`[AI Healer] Self-healing failed: ${aiError.message}`);
-      await sendFeishuMessage(
-        'Self-Healing Failed (Assert)',
-        `Failed to heal locator for "${description}". Error: ${aiError.message}`,
-        'error'
-      );
+      await sendHealNotification({
+        title: '自愈失败（断言）',
+        status: 'error',
+        description,
+        originalLocator: locatorStr,
+        errorDetail: stripAnsi(aiError.message),
+      });
       throw error; // Re-throw the original Playwright error
     }
   }

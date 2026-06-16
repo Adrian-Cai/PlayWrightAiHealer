@@ -3,7 +3,9 @@ pipeline {
 
     environment {
         DEEPSEEK_API_KEY = credentials('DEEPSEEK_API_KEY')
-        FEISHU_WEBHOOK_URL = credentials('FEISHU_WEBHOOK_URL')
+        FEISHU_APP_ID = credentials('FEISHU_APP_ID')
+        FEISHU_APP_SECRET = credentials('FEISHU_APP_SECRET')
+        FEISHU_CHAT_ID = credentials('FEISHU_CHAT_ID')
     }
 
     stages {
