@@ -6,7 +6,8 @@ import { sendFeishuMessage } from './feishu-bot';
 dotenv.config();
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY,
+  baseURL: 'https://api.deepseek.com',
 });
 
 /**
@@ -56,7 +57,7 @@ Rules:
     try {
       const completion = await openai.chat.completions.create({
         messages: [{ role: 'user', content: prompt }],
-        model: 'gpt-4o-mini',
+        model: 'deepseek-chat',
       });
 
       const healedLocator = completion.choices[0].message.content?.trim();

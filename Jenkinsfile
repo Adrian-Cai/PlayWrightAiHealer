@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        OPENAI_API_KEY = credentials('OPENAI_API_KEY')
+        DEEPSEEK_API_KEY = credentials('DEEPSEEK_API_KEY')
         FEISHU_WEBHOOK_URL = credentials('FEISHU_WEBHOOK_URL')
     }
 
