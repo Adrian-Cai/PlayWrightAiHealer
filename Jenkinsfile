@@ -1,5 +1,10 @@
 pipeline {
-    agent any
+    agent {
+        docker {
+            image 'mcr.microsoft.com/playwright:v1.52.0-noble'
+            args '-u root:root'
+        }
+    }
 
     environment {
         DEEPSEEK_API_KEY = credentials('DEEPSEEK_API_KEY')
@@ -18,7 +23,6 @@ pipeline {
         stage('Install Dependencies') {
             steps {
                 sh 'npm ci'
-                sh 'npx playwright install chromium --with-deps'
             }
         }
 
