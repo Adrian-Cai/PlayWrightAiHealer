@@ -37,6 +37,57 @@ export interface DOMSnapshot {
  */
 export async function capturePageState(page: Page): Promise<DOMSnapshot> {
   const snapshot = await page.evaluate(() => {
+    const isElementVisible = (el: Element): boolean => {
+      if (!(el instanceof HTMLElement)) {
+        return false;
+      }
+
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') {
+        return false;
+      }
+
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+
+    const captureSimplifiedTree = (node: Node, depth = 0, maxDepth = 5): string => {
+      if (depth > maxDepth) {
+        return '';
+      }
+
+      const indent = '  '.repeat(depth);
+      let result = '';
+
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent?.trim();
+        if (text && text.length < 100) {
+          result += `${indent}[text: ${text}]\n`;
+        }
+        return result;
+      }
+
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node as Element;
+        const tag = el.tagName.toLowerCase();
+        const id = el.id ? ` id="${el.id}"` : '';
+        const classes = el.className ? ` class="${el.className}"` : '';
+        result += `${indent}<${tag}${id}${classes}>\n`;
+
+        let childCount = 0;
+        for (const child of node.childNodes) {
+          if (childCount >= 10) {
+            result += `${indent}  ...\n`;
+            break;
+          }
+          result += captureSimplifiedTree(child, depth + 1, maxDepth);
+          childCount++;
+        }
+      }
+
+      return result;
+    };
+
     const result: DOMSnapshot = {
       ariaElements: [],
       interactiveElements: [],
@@ -135,66 +186,6 @@ export async function capturePageState(page: Page): Promise<DOMSnapshot> {
   });
 
   return snapshot;
-}
-
-/**
- * Check if an element is visible in the viewport
- */
-function isElementVisible(el: Element): boolean {
-  if (!(el instanceof HTMLElement)) {
-    return false;
-  }
-
-  // Check display and visibility CSS
-  const style = window.getComputedStyle(el);
-  if (style.display === 'none' || style.visibility === 'hidden') {
-    return false;
-  }
-
-  // Check if in viewport or has size
-  const rect = el.getBoundingClientRect();
-  return rect.width > 0 && rect.height > 0;
-}
-
-/**
- * Capture simplified DOM tree (max depth 5, max children 10 per node)
- */
-function captureSimplifiedTree(node: Node, depth = 0, maxDepth = 5): string {
-  if (depth > maxDepth) {
-    return '';
-  }
-
-  const indent = '  '.repeat(depth);
-  let result = '';
-
-  if (node.nodeType === Node.TEXT_NODE) {
-    const text = node.textContent?.trim();
-    if (text && text.length < 100) {
-      result += `${indent}[text: ${text}]\n`;
-    }
-    return result;
-  }
-
-  if (node.nodeType === Node.ELEMENT_NODE) {
-    const el = node as Element;
-    const tag = el.tagName.toLowerCase();
-    const id = el.id ? ` id="${el.id}"` : '';
-    const classes = el.className ? ` class="${el.className}"` : '';
-    result += `${indent}<${tag}${id}${classes}>\n`;
-
-    // Add up to 10 children
-    let childCount = 0;
-    for (const child of node.childNodes) {
-      if (childCount >= 10) {
-        result += `${indent}  ...\n`;
-        break;
-      }
-      result += captureSimplifiedTree(child, depth + 1, maxDepth);
-      childCount++;
-    }
-  }
-
-  return result;
 }
 
 /**
