@@ -132,6 +132,7 @@ A Playwright locator has stopped working. Your task is to generate a new, equiva
 **Action:** ${input.action}
 ${input.expectedText ? `**Expected Text:** ${input.expectedText}` : ''}
 ${input.errorMessage ? `**Error Message:** ${input.errorMessage}` : ''}
+${input.domSnapshot ? `**Page DOM (visible interactive elements, one per line: tag#id.class text="..." placeholder="..." role="..."):**\n${input.domSnapshot}` : ''}
 
 **Constraints:**
 1. Return a Playwright locator string (CSS, XPath, ARIA, or text selector).

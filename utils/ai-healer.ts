@@ -100,8 +100,24 @@ async function heal(
       testInfo
     );
 
+    // Format visible interactive elements so AI can generate scope-limited
+    // locators (e.g. .ant-menu-item:has-text(...)) instead of ambiguous bare
+    // text selectors that match multiple elements.
+    const domSnapshot = snapshot.interactiveElements
+      .map((el) => {
+        const parts = [el.tag];
+        if (el.id) parts.push(`#${el.id}`);
+        if (el.classes) parts.push(`.${el.classes.split(' ').join('.')}`);
+        if (el.text) parts.push(`text="${el.text}"`);
+        if (el.placeholder) parts.push(`placeholder="${el.placeholder}"`);
+        if (el.role) parts.push(`role="${el.role}"`);
+        return parts.join(' ');
+      })
+      .join('\n');
+    const inputWithSnapshot: HealInput = { ...input, domSnapshot };
+
     // Step 3: Call AI for heal
-    const aiOutput = await callAIForHeal(input);
+    const aiOutput = await callAIForHeal(inputWithSnapshot);
     await emitEvent(
       page,
       {

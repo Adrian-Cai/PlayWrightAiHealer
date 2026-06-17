@@ -32,6 +32,9 @@ export interface HealInput {
   /** Playwright 抛出的原始错误信息 */
   errorMessage?: string;
 
+  /** DOM 快照（格式化后的可见交互元素列表，供 AI 生成精确 locator） */
+  domSnapshot?: string;
+
   /** 超时时间（毫秒），默认 5000 */
   timeoutMs?: number;
 

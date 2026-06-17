@@ -10,7 +10,7 @@ test('AI Case UI Test - Manual Confirmation', async ({ page }, testInfo) => {
 
   // 2. Click "人工确认" (Manual Confirmation) using AI Healer wrapper
   //    Locator is resolved from locator-store.json by key.
-  await aiClickByKey(page, 'manualConfirmMenu', '人工确认菜单项', testInfo);
+  await aiClickByKey(page, 'manualConfirmMenu', "Antd 侧边菜单项，文本为'人工确认'", testInfo);
 
   // 3. Assert "批量确认" (Batch Confirmation) button exists using AI Healer
   await aiAssertByKey(page, 'batchConfirmButton', '批量确认按钮', testInfo);
