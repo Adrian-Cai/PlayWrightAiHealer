@@ -1,6 +1,6 @@
 /**
  * Feishu Bot — Sends heal notifications to Feishu group chat
- * Subscribes to HealEventBus and dispatches formatted messages
+ * Subscribes to HealEventBus and dispatches interactive card messages
  */
 
 import axios from 'axios';
@@ -17,9 +17,126 @@ const CHAT_ID = process.env.FEISHU_CHAT_ID || '';
 let tenantAccessToken: string = '';
 let tokenExpiry: number = 0;
 
+type Status = 'success' | 'warning' | 'error' | 'info';
+
+// ---------------------------------------------------------------------------
+// Feishu interactive card helpers
+// ---------------------------------------------------------------------------
+
+/** Map status to Feishu card header template color. */
+function statusToTemplate(status: Status): string {
+  const map: Record<Status, string> = {
+    success: 'green',
+    warning: 'orange',
+    error: 'red',
+    info: 'blue',
+  };
+  return map[status];
+}
+
+function statusToEmoji(status: Status): string {
+  const map: Record<Status, string> = {
+    success: '✅',
+    warning: '⚠️',
+    error: '❌',
+    info: 'ℹ️',
+  };
+  return map[status];
+}
+
+/** A short key-value field rendered in a 2-column layout. */
+function field(label: string, value: string) {
+  return {
+    is_short: true,
+    text: { tag: 'lark_md', content: `**${label}**\n${value}` },
+  };
+}
+
+/** A full-width lark_md text block. */
+function divMd(content: string) {
+  return { tag: 'div', text: { tag: 'lark_md', content } };
+}
+
+/** Horizontal divider. */
+function hr() {
+  return { tag: 'hr' };
+}
+
+/** Small grey note line (good for timestamps / secondary info). */
+function noteMd(content: string) {
+  return { tag: 'note', text: { tag: 'lark_md', content } };
+}
+
+/** A clickable button that opens a URL. */
+function linkButton(text: string, url: string, type: 'primary' | 'default' = 'primary') {
+  return {
+    tag: 'button',
+    text: { tag: 'plain_text', content: text },
+    url,
+    type,
+  };
+}
+
+/** Truncate a long string to a max length, appending an ellipsis. */
+function truncate(str: string, max = 200): string {
+  if (!str) return '-';
+  const oneLine = str.split('\n')[0];
+  return oneLine.length > max ? oneLine.substring(0, max) + '…' : oneLine;
+}
+
+/** Wrap a locator/value in inline code for readability. */
+function code(value: string): string {
+  return `\`${value || '-'}\``;
+}
+
 /**
- * Get tenant access token from Feishu API
- * Caches the token and expires 300s before actual expiry
+ * Send a Feishu interactive card to the configured chat.
+ */
+async function sendCard(title: string, status: Status, elements: any[]): Promise<void> {
+  const token = await getTenantAccessToken();
+
+  const card = {
+    config: { wide_screen_mode: true, enable_forward: true },
+    header: {
+      title: { tag: 'plain_text', content: `${statusToEmoji(status)} ${title}` },
+      template: statusToTemplate(status),
+    },
+    elements,
+  };
+
+  const payload = {
+    receive_id: CHAT_ID,
+    msg_type: 'interactive',
+    content: JSON.stringify(card),
+  };
+
+  try {
+    await axios.post(
+      'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+    console.log(`[Feishu] Card sent: ${title}`);
+  } catch (error: any) {
+    console.error(`[Feishu] Error sending card: ${error.message}`);
+    if (error.response?.data) {
+      console.error(`[Feishu] Response: ${JSON.stringify(error.response.data)}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Token management
+// ---------------------------------------------------------------------------
+
+/**
+ * Get tenant access token from Feishu API.
+ * Caches the token and expires 300s before actual expiry.
  */
 async function getTenantAccessToken(): Promise<string> {
   if (tenantAccessToken && Date.now() < tokenExpiry) {
@@ -44,8 +161,12 @@ async function getTenantAccessToken(): Promise<string> {
   return tenantAccessToken;
 }
 
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
 /**
- * Send a heal event notification to Feishu
+ * Send a single heal event as an interactive card.
  */
 async function sendHealNotification(event: HealEvent): Promise<void> {
   if (!APP_ID || !APP_SECRET || !CHAT_ID) {
@@ -54,91 +175,72 @@ async function sendHealNotification(event: HealEvent): Promise<void> {
   }
 
   const status = getStatusForEvent(event.type);
-  const emoji = getEmojiForStatus(status);
+  const elements: any[] = [];
 
-  const lines: Array<{ tag: string; text: string }> = [];
+  // --- Element & action ---
+  elements.push(divMd(`**📋 元素描述**\n${event.input.description}`));
+  elements.push({
+    tag: 'div',
+    fields: [
+      field('🎯 动作', event.input.action),
+      field('⏱️ 耗时', `${event.durationMs}ms`),
+    ],
+  });
 
-  lines.push({ tag: 'text', text: `${emoji} **${event.type}**` });
-  lines.push({ tag: 'text', text: `📋 元素: ${event.input.description}` });
-  lines.push({ tag: 'text', text: `🎯 动作: ${event.input.action}` });
-  lines.push({ tag: 'text', text: `🔍 原始定位器: \`${event.input.originalLocator}\`` });
+  elements.push(hr());
+
+  // --- Locators ---
+  elements.push({
+    tag: 'div',
+    fields: [field('🔍 原始定位器', code(event.input.originalLocator))],
+  });
 
   if (event.output) {
-    lines.push({
-      tag: 'text',
-      text: `🔧 AI 修复定位器: \`${event.output.locator}\``,
+    elements.push({
+      tag: 'div',
+      fields: [
+        field('🔧 AI 修复定位器', code(event.output.locator)),
+        field('💯 置信度', `${(event.output.confidence * 100).toFixed(0)}%`),
+      ],
     });
-    lines.push({
-      tag: 'text',
-      text: `💯 置信度: ${(event.output.confidence * 100).toFixed(0)}%`,
-    });
-    lines.push({ tag: 'text', text: `💬 原因: ${event.output.reason}` });
+    elements.push(divMd(`**💬 修复原因**\n${event.output.reason}`));
   }
 
-  if (event.validation) {
-    if (!event.validation.valid) {
-      lines.push({
-        tag: 'text',
-        text: `❌ 验证失败: ${event.validation.errors.join('; ')}`,
-      });
-    }
+  if (event.cacheHit) {
+    elements.push(noteMd('⚡ 本次结果来自自愈缓存命中（未调用 AI）'));
+  }
+
+  // --- Validation / errors ---
+  if (event.validation && !event.validation.valid) {
+    elements.push(divMd(`**❌ 验证失败**\n${event.validation.errors.join('；')}`));
   }
 
   if (event.error) {
-    lines.push({ tag: 'text', text: `❗ 错误: ${event.error.substring(0, 200)}` });
+    elements.push(divMd(`**❗ 错误详情**\n\`\`\`\n${truncate(event.error, 500)}\n\`\`\``));
   }
 
-  lines.push({ tag: 'text', text: `🌐 页面: ${event.input.pageUrl}` });
-  lines.push({ tag: 'text', text: `⏱️ 耗时: ${event.durationMs}ms` });
+  elements.push(hr());
 
-  if (event.testName) {
-    lines.push({ tag: 'text', text: `📝 测试: ${event.testName}` });
-  }
+  // --- Context (page / test / time) ---
+  elements.push(divMd(`**🌐 页面地址**\n${event.input.pageUrl || '-'}`));
 
-  if (event.jenkinsUrl) {
-    lines.push({ tag: 'text', text: `🔗 Jenkins: ${event.jenkinsUrl}` });
-  }
+  const ctxFields: any[] = [];
+  if (event.testName) ctxFields.push(field('📝 测试用例', truncate(event.testName, 60)));
+  if (event.timestamp) ctxFields.push(field('⏰ 时间', event.timestamp.replace('T', ' ').split('.')[0]));
+  if (ctxFields.length > 0) elements.push({ tag: 'div', fields: ctxFields });
 
-  lines.push({ tag: 'text', text: `⏰ 时间: ${event.timestamp}` });
+  // --- Action buttons ---
+  const actions: any[] = [];
+  if (event.jenkinsUrl) actions.push(linkButton('🔗 查看 Jenkins', event.jenkinsUrl, 'primary'));
+  if (actions.length > 0) elements.push({ tag: 'action', actions });
 
-  const token = await getTenantAccessToken();
-  const content: Array<Array<{ tag: string; text: string }>> = lines.map((line) => [line]);
-
-  const payload = {
-    receive_id: CHAT_ID,
-    msg_type: 'post',
-    content: JSON.stringify({
-      zh_cn: {
-        title: `${emoji} ${event.type}`,
-        content,
-      },
-    }),
-  };
-
-  try {
-    await axios.post(
-      'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-    console.log(`[Feishu] Notification sent: ${event.type}`);
-  } catch (error: any) {
-    console.error(`[Feishu] Error sending notification: ${error.message}`);
-    if (error.response?.data) {
-      console.error(`[Feishu] Response: ${JSON.stringify(error.response.data)}`);
-    }
-  }
+  await sendCard(event.type, status, elements);
 }
 
 /**
  * Get status for event type
  */
-function getStatusForEvent(type: string): 'success' | 'warning' | 'error' | 'info' {
+function getStatusForEvent(type: string): Status {
   if (type === 'HEAL_SUCCESS' || type === 'VALIDATION_PASSED' || type === 'CACHE_HIT') {
     return 'success';
   }
@@ -146,19 +248,6 @@ function getStatusForEvent(type: string): 'success' | 'warning' | 'error' | 'inf
     return 'error';
   }
   return 'info';
-}
-
-/**
- * Get emoji for status
- */
-function getEmojiForStatus(status: 'success' | 'warning' | 'error' | 'info'): string {
-  const map = {
-    success: '✅',
-    warning: '⚠️',
-    error: '❌',
-    info: 'ℹ️',
-  };
-  return map[status];
 }
 
 /**
@@ -242,95 +331,78 @@ export async function sendCaseSummaryNotification(opts: CaseSummaryOptions): Pro
     return;
   }
 
-  const statusEmoji = {
-    success: '✅',
-    error: '❌',
-    warning: '⚠️',
-  } as const;
+  const elements: any[] = [];
 
-  const lines: Array<Array<{ tag: string; text: string }>> = [];
+  // --- Test result stats (2x2 grid) ---
+  elements.push({
+    tag: 'div',
+    fields: [
+      field('📊 测试总数', String(opts.total)),
+      field('✅ 通过', String(opts.passed)),
+      field('❌ 失败', String(opts.failed)),
+      field('⏭️ 跳过', String(opts.skipped)),
+    ],
+  });
 
-  lines.push([{ tag: 'text', text: `📊 测试总数：${opts.total}` }]);
-  lines.push([{ tag: 'text', text: `✅ 通过：${opts.passed}` }]);
-  lines.push([{ tag: 'text', text: `❌ 失败：${opts.failed}` }]);
-  lines.push([{ tag: 'text', text: `⏭️ 跳过：${opts.skipped}` }]);
-  lines.push([{ tag: 'text', text: `🔧 自愈触发：${opts.healTriggeredCount}` }]);
-  lines.push([{ tag: 'text', text: `✅ 自愈成功：${opts.healSuccessCount}` }]);
-  lines.push([{ tag: 'text', text: `❌ 自愈失败：${opts.healFailedCount}` }]);
+  elements.push(hr());
 
-  if (opts.reportUrl) {
-    lines.push([{ tag: 'text', text: `📄 测试报告：${opts.reportUrl}` }]);
-  }
+  // --- Self-healing stats ---
+  elements.push({
+    tag: 'div',
+    fields: [
+      field('🔧 自愈触发', String(opts.healTriggeredCount)),
+      field('✅ 自愈成功', String(opts.healSuccessCount)),
+      field('❌ 自愈失败', String(opts.healFailedCount)),
+    ],
+  });
 
+  // --- Failed cases detail ---
   if (opts.failedCases.length > 0) {
-    lines.push([{ tag: 'text', text: `\n失败用例明细：` }]);
+    elements.push(hr());
+    elements.push(divMd(`**🧨 失败用例明细（共 ${opts.failedCases.length} 个）**`));
+    const failedBlocks: string[] = [];
     opts.failedCases.slice(0, 10).forEach((item, index) => {
-      const error = item.error ? item.error.split('\n')[0].substring(0, 120) : '-';
-      lines.push([
-        {
-          tag: 'text',
-          text:
-            `\n${index + 1}. ${item.title}\n` +
-            `文件：${item.file}\n` +
-            `状态：${item.status}\n` +
-            `错误：${error}`,
-        },
-      ]);
+      failedBlocks.push(
+        `${index + 1}. **${truncate(item.title, 80)}**\n` +
+          `📁 ${item.file}\n` +
+          `🏷️ ${item.status}\n` +
+          `💬 ${truncate(item.error || '-', 120)}`
+      );
     });
+    elements.push(divMd(failedBlocks.join('\n\n')));
+    if (opts.failedCases.length > 10) {
+      elements.push(noteMd(`…还有 ${opts.failedCases.length - 10} 个失败用例未展示，详见报告`));
+    }
   }
 
+  // --- AI self-heal detail ---
   if (opts.healEvents.length > 0) {
     const notable = opts.healEvents.filter(
       (e) => e.type === 'HEAL_SUCCESS' || e.type === 'HEAL_FAILED'
     );
     if (notable.length > 0) {
-      lines.push([{ tag: 'text', text: `\nAI 自愈明细：` }]);
+      elements.push(hr());
+      elements.push(divMd(`**🤖 AI 自愈明细（共 ${notable.length} 条）**`));
+      const healBlocks: string[] = [];
       notable.slice(0, 10).forEach((item, index) => {
-        lines.push([
-          {
-            tag: 'text',
-            text:
-              `\n${index + 1}. [${item.type}] ${item.input.description}\n` +
-              `原始定位器：${item.input.originalLocator}\n` +
-              `AI 定位器：${item.output?.locator || '-'}\n` +
-              `动作：${item.input.action}`,
-          },
-        ]);
+        const icon = item.type === 'HEAL_SUCCESS' ? '✅' : '❌';
+        healBlocks.push(
+          `${index + 1}. ${icon} ${item.input.description}\n` +
+            `🔍 ${code(item.input.originalLocator)} → ${code(item.output?.locator || '-')}\n` +
+            `🎯 ${item.input.action}`
+        );
       });
+      elements.push(divMd(healBlocks.join('\n\n')));
     }
   }
 
-  const token = await getTenantAccessToken();
-
-  const payload = {
-    receive_id: CHAT_ID,
-    msg_type: 'post',
-    content: JSON.stringify({
-      zh_cn: {
-        title: `${statusEmoji[opts.status]} ${opts.title}`,
-        content: lines,
-      },
-    }),
-  };
-
-  try {
-    await axios.post(
-      'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-    console.log(`[Feishu] Summary notification sent: ${opts.title}`);
-  } catch (error: any) {
-    console.error(`[Feishu] Error sending summary notification: ${error.message}`);
-    if (error.response?.data) {
-      console.error(`[Feishu] Response: ${JSON.stringify(error.response.data)}`);
-    }
+  // --- Action button ---
+  if (opts.reportUrl) {
+    elements.push(hr());
+    elements.push({ tag: 'action', actions: [linkButton('📄 查看完整测试报告', opts.reportUrl, 'primary')] });
   }
+
+  await sendCard(opts.title, opts.status, elements);
 }
 
 /**
@@ -346,39 +418,5 @@ export async function sendFeishuMessage(
     return;
   }
 
-  const emoji = getEmojiForStatus(status);
-  const lines: Array<{ tag: string; text: string }> = [
-    { tag: 'text', text: `${emoji} **${title}**` },
-    { tag: 'text', text: content },
-  ];
-
-  const token = await getTenantAccessToken();
-  const msgContent: Array<Array<{ tag: string; text: string }>> = lines.map((line) => [line]);
-
-  const payload = {
-    receive_id: CHAT_ID,
-    msg_type: 'post',
-    content: JSON.stringify({
-      zh_cn: {
-        title: `${emoji} ${title}`,
-        content: msgContent,
-      },
-    }),
-  };
-
-  try {
-    await axios.post(
-      'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-    console.log(`[Feishu] Message sent: ${title}`);
-  } catch (error: any) {
-    console.error(`[Feishu] Error sending message: ${error.message}`);
-  }
+  await sendCard(title, status, [divMd(content)]);
 }

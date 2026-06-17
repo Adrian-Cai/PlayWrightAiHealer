@@ -1,0 +1,50 @@
+# CNB 原生流水线 —— 替代 Jenkins 拉镜像方案，更快、自带依赖缓存
+#
+# 与 Jenkins 的区别：
+#   1. 直接使用托管运行环境，无需 Jenkins 在宿主机上 docker run 起停容器；
+#   2. `volumes` 自动缓存 node_modules 与 npm 下载包，二次构建依赖安装近乎秒级；
+#   3. Playwright 镜像内置浏览器，无需每次 install browsers。
+#
+# 使用前请在仓库「设置 → 环境变量 / 密钥」中配置以下变量（与 Jenkins credentials 一致）：
+#   DEEPSEEK_API_KEY、FEISHU_APP_ID、FEISHU_APP_SECRET、FEISHU_CHAT_ID
+# 它们会自动注入为环境变量，无需在此声明。
+
+.node-env: &node-env
+  docker:
+    image: mcr.microsoft.com/playwright:v1.61.0-noble
+    volumes:
+      - node_modules        # 缓存工作区依赖，二次构建秒装
+      - /root/.npm          # 缓存 npm 下载包，减少网络下载
+
+main:
+  push:
+    - name: playwright-ai-healer
+      <<: *node-env
+      env:
+        CI: "true"
+        DEEPSEEK_BASE_URL: https://api.deepseek.com/v1
+        # 飞书卡片里的「查看报告」按钮指向本次 CNB 构建日志
+        PLAYWRIGHT_REPORT_URL: ${CNB_BUILD_WEB_URL}
+        JENKINS_BUILD_URL: ${CNB_BUILD_WEB_URL}
+      stages:
+        - name: install-deps
+          script: npm ci
+        - name: run-tests
+          script: npm run test:ci
+      failStages:
+        - name: show-failed-msg
+          script: echo "构建失败：$CNB_BUILD_FAILED_MSG"
+
+  pull_request:
+    - name: playwright-ai-healer-pr
+      <<: *node-env
+      env:
+        CI: "true"
+        DEEPSEEK_BASE_URL: https://api.deepseek.com/v1
+        PLAYWRIGHT_REPORT_URL: ${CNB_BUILD_WEB_URL}
+        JENKINS_BUILD_URL: ${CNB_BUILD_WEB_URL}
+      stages:
+        - name: install-deps
+          script: npm ci
+        - name: run-tests
+          script: npm run test:ci

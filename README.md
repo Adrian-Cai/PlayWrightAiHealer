@@ -52,24 +52,15 @@ await aiAssert(page, 'text=批量确认', '批量确认按钮');
 
 项目集成了飞书机器人通知能力，用于在自愈触发、自愈失败、自愈成功时发送消息。
 
-当前通知内容包括：
+当前通知采用飞书**交互式卡片**（`msg_type: interactive`）格式，卡片包含：
 
-* 目标元素；
-* 原始定位器；
-* AI 修复定位器；
-* 错误摘要；
-* 页面地址；
-* 当前状态。
+* 彩色标题头（成功绿色 / 警告橙色 / 失败红色）；
+* 分栏字段展示：元素描述、动作、原始定位器、AI 修复定位器、置信度、修复原因；
+* 错误详情以代码块展示，便于复制排查；
+* 页面地址、耗时、测试用例、时间等上下文信息；
+* 「查看 Jenkins」等跳转按钮，一键直达构建详情。
 
-示例：
-
-```text
-自愈触发（断言）
-元素：批量确认按钮
-原始定位器：text=批量确认
-AI 修复定位器：button:has-text("批量确认")
-状态：警告
-```
+运行结束还会由 `reporters/feishu-reporter.ts` 汇总发送一张总览卡片，包含测试总数 / 通过 / 失败 / 跳过、自愈触发 / 成功 / 失败统计、失败用例明细、AI 自愈明细，以及「查看完整测试报告」按钮。
 
 ### 4. Jenkins 自动化执行
 
@@ -92,14 +83,32 @@ mcr.microsoft.com/playwright:v1.61.0-noble
 
 ```text
 playwright-ai-healer
-├── tests/                  # Playwright 测试用例目录
-├── ai-healer.ts             # AI 自愈能力封装
-├── feishu-bot.ts            # 飞书机器人通知封装
-├── playwright.config.ts     # Playwright 配置文件
-├── Jenkinsfile              # Jenkins 流水线配置
-├── package.json             # 项目依赖与脚本配置
-├── .env                     # 本地环境变量配置
-└── README.md                # 项目说明文档
+├── tests/                       # Playwright 测试用例目录
+│   ├── ai-case.spec.ts          # 业务用例（接入 AI 自愈）
+│   ├── healer.spec.ts           # 自愈能力单元测试
+│   ├── healer-integration.spec.ts
+│   └── fixtures/                # 测试夹具（如 broken-page.html）
+├── utils/                       # 工具与核心能力封装
+│   ├── ai-healer.ts             # AI 自愈点击/断言封装
+│   ├── feishu-bot.ts            # 飞书机器人卡片通知封装
+│   ├── capture-state.ts         # 页面状态抓取
+│   ├── heal-cache.ts            # 自愈结果缓存
+│   ├── heal-event-bus.ts        # 自愈事件总线
+│   ├── healer-collector.ts      # 自愈事件采集
+│   ├── openai-client.ts         # AI 模型客户端
+│   └── quality-gate.ts          # 自愈质量门禁
+├── reporters/
+│   └── feishu-reporter.ts       # Playwright 自定义 Reporter，运行结束汇总推送飞书
+├── skills/self-healing-locator/ # 自愈定位器 Skill 契约与说明
+├── scripts/                     # 辅助脚本（自愈自测、缓存打印等）
+├── playwright.config.ts         # Playwright 配置文件
+├── playwright.global-setup.ts   # 全局初始化（如初始化飞书机器人订阅）
+├── playwright.global-teardown.ts
+├── Jenkinsfile                  # Jenkins 流水线配置（拉镜像方式）
+├── .cnb.yml                     # CNB 原生流水线配置（更快、自带缓存，推荐）
+├── package.json                 # 项目依赖与脚本配置
+├── .env                         # 本地环境变量配置（不入库）
+└── README.md                    # 项目说明文档
 ```
 
 ## 本地运行
@@ -281,10 +290,20 @@ Publish Playwright Report
 
 ```bash
 npm ci
-npx playwright test
+npm run test:ci      # 等价于 NODE_OPTIONS='--require ts-node/register' playwright test
 ```
 
 测试完成后，Jenkins 会发布 `playwright-report/index.html` 作为 HTML 报告。
+
+### 更快的方式：CNB 原生流水线
+
+仓库根目录已提供 `.cnb.yml`，相比 Jenkins 每次拉镜像起容器的方式更快：
+
+* 直接使用 CNB 托管运行环境，省去宿主机 `docker run` 容器起停开销；
+* 通过 `volumes` 自动缓存 `node_modules` 与 npm 下载包，依赖安装近乎秒级；
+* Playwright 镜像内置浏览器，无需重复安装。
+
+在仓库「设置 → 环境变量 / 密钥」中配置好 `DEEPSEEK_API_KEY`、`FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_CHAT_ID` 后，推送到 `main` 或提交 PR 即可自动触发构建。
 
 ## 使用示例
 
