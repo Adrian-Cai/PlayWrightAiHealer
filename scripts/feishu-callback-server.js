@@ -98,7 +98,7 @@ function findProposal(proposalId) {
 // --- Long-connection setup ---
 
 const dispatcher = new lark.EventDispatcher({}).register({
-  cardAction: async (event) => {
+  'card.action.trigger': async (event) => {
     // event shape: { messageId, chatId, operator, action: { value, tag, ... } }
     const rawValue = event?.action?.value;
     const value = parseCallbackValue(rawValue);
@@ -113,7 +113,18 @@ const dispatcher = new lark.EventDispatcher({}).register({
       `[FeishuCallback] Received ${value.action} for proposal ${value.proposalId} from ${operator}`
     );
 
+    // Debug: token match diagnostics (only first/last 4 chars to avoid leaking)
+    const envTok = process.env.HEALER_CALLBACK_TOKEN || '';
+    const recvTok = value.token || '';
+    const tokMatch = envTok === recvTok;
+    console.log(
+      `[FeishuCallback] token check: env=${envTok ? envTok.slice(0,4)+'...'+envTok.slice(-4) : '(unset)'} ` +
+      `recv=${recvTok ? recvTok.slice(0,4)+'...'+recvTok.slice(-4) : '(none)'} match=${tokMatch}`
+    );
+
     const originalProposal = findProposal(value.proposalId);
+    console.log(`[FeishuCallback] proposal lookup: ${originalProposal ? 'found (status=' + originalProposal.status + ')' : 'NOT FOUND'}`);
+
     const outcome = handleReviewCallback(value);
 
     if (outcome.ok) {
