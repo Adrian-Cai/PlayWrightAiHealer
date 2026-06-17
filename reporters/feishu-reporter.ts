@@ -68,11 +68,25 @@ class FeishuReporter implements Reporter {
         ? 'Playwright 自动化测试通过'
         : 'Playwright 自动化测试存在失败';
 
-    const reportUrl =
-      process.env.PLAYWRIGHT_REPORT_URL ||
+    // 对外报告地址优先用显式 PLAYWRIGHT_REPORT_URL；否则基于 Jenkins 构建地址拼接已发布报告路径
+    // （publishHTML reportName='Playwright_Report'）。旧的 'playwright-report/' 是工作区目录，
+    // Jenkins 不会以 URL 形式提供，会返回 502，因此不能直接把 BUILD_URL 当报告链接。
+    const jenkinsBase =
+      process.env.JENKINS_PUBLIC_URL ||
       process.env.BUILD_URL ||
       process.env.JENKINS_BUILD_URL ||
       '';
+    const normalizedBase =
+      jenkinsBase === '' || jenkinsBase.endsWith('/')
+        ? jenkinsBase
+        : `${jenkinsBase}/`;
+    const reportUrl =
+      process.env.PLAYWRIGHT_REPORT_URL ||
+      (normalizedBase ? `${normalizedBase}Playwright_Report/` : '');
+    // 归档后的报告压缩包：浏览器内 HTML 报告受 Jenkins CSP 限制白屏时，可下载解压本地打开 index.html
+    const reportArchiveUrl = normalizedBase
+      ? `${normalizedBase}artifact/playwright-report/*zip*/playwright-report.zip`
+      : '';
 
     await sendCaseSummaryNotification({
       title,
@@ -87,6 +101,7 @@ class FeishuReporter implements Reporter {
       failedCases: this.caseResults,
       healEvents,
       reportUrl,
+      reportArchiveUrl,
     });
 
     console.log(

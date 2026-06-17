@@ -319,6 +319,7 @@ export interface CaseSummaryOptions {
   failedCases: FailedCaseSummary[];
   healEvents: HealEventSummary[];
   reportUrl?: string;
+  reportArchiveUrl?: string;
 }
 
 /**
@@ -399,7 +400,12 @@ export async function sendCaseSummaryNotification(opts: CaseSummaryOptions): Pro
   // --- Action button ---
   if (opts.reportUrl) {
     elements.push(hr());
-    elements.push({ tag: 'action', actions: [linkButton('📄 查看完整测试报告', opts.reportUrl, 'primary')] });
+    const actions: any[] = [linkButton('📄 查看完整测试报告', opts.reportUrl, 'primary')];
+    // 浏览器内 HTML 报告受 Jenkins CSP 限制可能白屏，提供压缩包下载兜底（解压后本地打开 index.html）
+    if (opts.reportArchiveUrl) {
+      actions.push(linkButton('⬇️ 下载报告压缩包', opts.reportArchiveUrl, 'default'));
+    }
+    elements.push({ tag: 'action', actions });
   }
 
   await sendCard(opts.title, opts.status, elements);

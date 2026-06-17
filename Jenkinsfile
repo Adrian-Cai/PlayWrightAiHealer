@@ -12,8 +12,13 @@ pipeline {
         FEISHU_APP_ID = credentials('FEISHU_APP_ID')
         FEISHU_APP_SECRET = credentials('FEISHU_APP_SECRET')
         FEISHU_CHAT_ID = credentials('FEISHU_CHAT_ID')
-        PLAYWRIGHT_REPORT_URL = "${BUILD_URL}playwright-report/"
-        JENKINS_BUILD_URL = "${BUILD_URL}"
+        // 对外可访问的 Jenkins 根地址（需以 '/' 结尾）。BUILD_URL 取自 Jenkins Location 配置；
+        // 若其指向内网/不可达主机（如 www.wiac.xyz:8080 → 502），可在 Jenkins 全局环境变量里设置
+        // JENKINS_PUBLIC_URL 覆盖。最彻底的做法是把 Jenkins Location URL 改为正确地址（如 https://jenkins.wiac.xyz/）。
+        // publishHTML reportName='Playwright_Report'，故对外报告地址拼接该路径；
+        // 旧的 'playwright-report/' 是工作区目录，Jenkins 不会以 URL 提供 → 502。
+        PLAYWRIGHT_REPORT_URL = "${env.JENKINS_PUBLIC_URL ?: env.BUILD_URL}Playwright_Report/"
+        JENKINS_BUILD_URL = "${env.JENKINS_PUBLIC_URL ?: env.BUILD_URL}"
         RUN_ID = "${BUILD_ID}-${BUILD_TIMESTAMP}"
     }
 
@@ -47,11 +52,13 @@ pipeline {
                 keepAll: true,
                 reportDir: 'playwright-report',
                 reportFiles: 'index.html',
-                reportName: 'Playwright Report'
+                reportName: 'Playwright_Report'
             ])
 
             // Archive heal system artifacts
-            archiveArtifacts artifacts: 'healer-cache.json,test-results/ai-healer-events.jsonl,test-results/**/*', allowEmptyArchive: true
+            // playwright-report/** 归档后可通过 ".../artifact/playwright-report/*zip*/playwright-report.zip" 下载，
+            // 作为浏览器内 HTML 报告受 Jenkins CSP 限制白屏时的兜底查看方式（解压后本地打开 index.html）
+            archiveArtifacts artifacts: 'healer-cache.json,test-results/ai-healer-events.jsonl,test-results/**/*,playwright-report/**', allowEmptyArchive: true
 
             // Clean up temp files
             sh 'rm -f healer-cache.json .heal-events.jsonl || true'
