@@ -1,183 +1,290 @@
-import { Page, expect } from '@playwright/test';
-import OpenAI from 'openai';
+/**
+ * AI Healer — Core orchestration for self-healing locators
+ * Orchestrates: cache → capture → AI → quality gate → retry → events
+ */
+
+import { Page } from '@playwright/test';
 import * as dotenv from 'dotenv';
-import { sendHealNotification } from './feishu-bot';
+import { v4 as uuidv4 } from 'uuid';
+import { HealInput, HealEvent } from '../skills/self-healing-locator/contract';
+import { healEventBus } from './heal-event-bus';
+import { healCache } from './heal-cache';
+import { callAIForHeal } from './openai-client';
+import { capturePageState } from './capture-state';
+import { validateHeal, isPassed, getOutput, getErrors } from './quality-gate';
 
 dotenv.config();
 
-const openai = new OpenAI({
-  apiKey: process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY,
-  baseURL: 'https://api.deepseek.com',
-});
-
-function stripAnsi(str: string): string {
-  return str.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '').replace(/\[[\d;]*m/g, '');
-}
-
 /**
- * AI-powered self-healing click wrapper.
- * @param page The Playwright Page object.
- * @param locatorStr The original locator string (CSS or XPath).
- * @param description A human-readable description of what we are trying to click.
+ * Core heal function — orchestrates the entire self-healing flow
  */
-export async function aiClick(page: Page, locatorStr: string, description: string) {
+async function heal(page: Page, input: HealInput): Promise<string> {
+  const startTime = Date.now();
+  const eventId = uuidv4();
+
+  // Emit start event
+  await emitEvent(page, {
+    id: eventId,
+    type: 'HEAL_START',
+    timestamp: new Date().toISOString(),
+    input,
+    retryCount: 0,
+    durationMs: 0,
+    cacheHit: false,
+  });
+
   try {
-    // Attempt standard click with a short timeout
-    await page.locator(locatorStr).click({ timeout: 5000 });
-    console.log(`[AI Healer] Successfully clicked "${description}" using original locator.`);
-  } catch (error) {
-    console.warn(`[AI Healer] Original locator "${locatorStr}" failed for "${description}". Attempting self-healing...`);
-    
-    // 1. Capture state (Accessibility Tree or simplified DOM)
-    // For simplicity, we'll use a simplified version of the DOM to stay within token limits.
-    const domSnapshot = await page.evaluate(() => {
-      const elements = Array.from(document.querySelectorAll('button, a, [role="button"], .ant-menu-item, span'));
-      return elements.map(el => {
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return null;
-        return {
-          tag: el.tagName,
-          text: el.textContent?.trim().substring(0, 50),
-          className: el.className,
-          id: el.id,
-          role: el.getAttribute('role'),
-        };
-      }).filter(Boolean).slice(0, 100); // Limit to top 100 elements
+    // Step 1: Check cache
+    const cachedOutput = healCache.get(input.originalLocator, input.pageUrl);
+    if (cachedOutput) {
+      await emitEvent(page, {
+        id: eventId,
+        type: 'CACHE_HIT',
+        timestamp: new Date().toISOString(),
+        input,
+        output: cachedOutput,
+        retryCount: 0,
+        durationMs: Date.now() - startTime,
+        cacheHit: true,
+        finalLocator: cachedOutput.locator,
+      });
+      return cachedOutput.locator;
+    }
+
+    // Step 2: Capture page state
+    const snapshot = await capturePageState(page);
+    await emitEvent(page, {
+      id: eventId,
+      type: 'STATE_CAPTURED',
+      timestamp: new Date().toISOString(),
+      input,
+      retryCount: 0,
+      durationMs: Date.now() - startTime,
+      cacheHit: false,
     });
 
-    // 2. Call OpenAI for a new locator
-    const prompt = `
-The Playwright locator "${locatorStr}" failed to find the element described as "${description}".
-Here is a list of interactive/visible elements on the current page:
-${JSON.stringify(domSnapshot, null, 2)}
+    // Step 3: Call AI for heal
+    const aiOutput = await callAIForHeal(input);
+    await emitEvent(page, {
+      id: eventId,
+      type: 'AI_CALLED',
+      timestamp: new Date().toISOString(),
+      input,
+      output: aiOutput,
+      retryCount: 0,
+      durationMs: Date.now() - startTime,
+      cacheHit: false,
+    });
 
-Task: Suggest a new CSS or XPath locator that likely targets the element "${description}".
-Rules:
-1. Return ONLY the locator string (e.g. "button:has-text('Submit')").
-2. Prefer robust locators.
-3. No explanation, just the string.
-`;
-
-    try {
-      const completion = await openai.chat.completions.create({
-        messages: [{ role: 'user', content: prompt }],
-        model: 'deepseek-chat',
+    // Step 4: Validate output
+    const validationResult = await validateHeal(page, input, aiOutput);
+    if (!isPassed(validationResult)) {
+      await emitEvent(page, {
+        id: eventId,
+        type: 'VALIDATION_FAILED',
+        timestamp: new Date().toISOString(),
+        input,
+        output: aiOutput,
+        validation: {
+          valid: false,
+          errors: getErrors(validationResult),
+        },
+        error: getErrors(validationResult).join('; '),
+        retryCount: 0,
+        durationMs: Date.now() - startTime,
+        cacheHit: false,
       });
 
-      const healedLocator = completion.choices[0].message.content?.trim();
-
-      if (healedLocator) {
-        console.info(`[AI Healer] AI suggested new locator: ${healedLocator}`);
-        
-        // Notify Feishu
-        await sendHealNotification({
-          title: '自愈触发（点击）',
-          status: 'warning',
-          description,
-          originalLocator: locatorStr,
-          healedLocator,
-        });
-
-        // 3. Retry with healed locator
-        await page.locator(healedLocator).click({ timeout: 10000 });
-        console.log(`[AI Healer] Successfully clicked "${description}" using healed locator.`);
-      } else {
-        throw new Error('AI could not suggest a locator.');
-      }
-    } catch (aiError) {
-      console.error(`[AI Healer] Self-healing failed: ${aiError.message}`);
-      await sendHealNotification({
-        title: '自愈失败（点击）',
-        status: 'error',
-        description,
-        originalLocator: locatorStr,
-        errorDetail: stripAnsi(aiError.message),
-      });
-      throw error; // Re-throw the original Playwright error
+      throw new Error(`Quality gate failed: ${getErrors(validationResult).join('; ')}`);
     }
+
+    await emitEvent(page, {
+      id: eventId,
+      type: 'VALIDATION_PASSED',
+      timestamp: new Date().toISOString(),
+      input,
+      output: aiOutput,
+      validation: {
+        valid: true,
+        errors: [],
+      },
+      retryCount: 0,
+      durationMs: Date.now() - startTime,
+      cacheHit: false,
+    });
+
+    // Step 5: Cache and return
+    healCache.set(input.originalLocator, input.pageUrl, aiOutput);
+
+    await emitEvent(page, {
+      id: eventId,
+      type: 'HEAL_SUCCESS',
+      timestamp: new Date().toISOString(),
+      input,
+      output: aiOutput,
+      retryCount: 0,
+      durationMs: Date.now() - startTime,
+      cacheHit: false,
+      finalLocator: aiOutput.locator,
+    });
+
+    return aiOutput.locator;
+  } catch (error) {
+    await emitEvent(page, {
+      id: eventId,
+      type: 'HEAL_FAILED',
+      timestamp: new Date().toISOString(),
+      input,
+      error: String(error),
+      retryCount: 0,
+      durationMs: Date.now() - startTime,
+      cacheHit: false,
+    });
+
+    throw error;
   }
 }
 
 /**
- * AI-powered self-healing assert wrapper.
- * @param page The Playwright Page object.
- * @param locatorStr The original locator string (CSS or XPath).
- * @param description A human-readable description of what we are asserting.
+ * Emit an event to the event bus
  */
-export async function aiAssert(page: Page, locatorStr: string, description: string) {
-  try {
-    const loc = page.locator(locatorStr);
-    await expect(loc).toBeVisible({ timeout: 5000 });
-    console.log(`[AI Healer] Assertion passed for "${description}" using original locator.`);
-  } catch (error) {
-    console.warn(`[AI Healer] Assertion failed for "${description}" with locator "${locatorStr}". Attempting self-healing...`);
+async function emitEvent(page: Page, event: Omit<HealEvent, 'testName' | 'jenkinsUrl'>) {
+  const fullEvent: HealEvent = {
+    ...event,
+    testName: page.context().browser?.browserType.name,
+    jenkinsUrl: process.env.JENKINS_BUILD_URL,
+  };
 
-    // 1. Capture DOM state
-    const domSnapshot = await page.evaluate(() => {
-      const elements = Array.from(document.querySelectorAll('button, a, [role="button"], .ant-menu-item, span, th, td, label'));
-      return elements.map(el => {
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return null;
-        return {
-          tag: el.tagName,
-          text: el.textContent?.trim().substring(0, 50),
-          className: el.className,
-          id: el.id,
-          role: el.getAttribute('role'),
-        };
-      }).filter(Boolean).slice(0, 100);
-    });
-
-    // 2. Call AI for a new locator
-    const prompt = `
-The Playwright locator "${locatorStr}" failed to assert the element described as "${description}".
-Here is a list of interactive/visible elements on the current page:
-${JSON.stringify(domSnapshot, null, 2)}
-
-Task: Suggest a new CSS or XPath locator that likely targets the element "${description}".
-Rules:
-1. Return ONLY the locator string (e.g. "button:has-text('Submit')").
-2. Prefer robust locators.
-3. No explanation, just the string.
-`;
-
-    try {
-      const completion = await openai.chat.completions.create({
-        messages: [{ role: 'user', content: prompt }],
-        model: 'deepseek-chat',
-      });
-
-      const healedLocator = completion.choices[0].message.content?.trim();
-
-      if (healedLocator) {
-        console.info(`[AI Healer] AI suggested new locator: ${healedLocator}`);
-
-        // Notify Feishu
-        await sendHealNotification({
-          title: '自愈触发（断言）',
-          status: 'warning',
-          description,
-          originalLocator: locatorStr,
-          healedLocator,
-        });
-
-        // 3. Retry assertion with healed locator
-        const healedLoc = page.locator(healedLocator);
-        await expect(healedLoc).toBeVisible({ timeout: 10000 });
-        console.log(`[AI Healer] Assertion passed for "${description}" using healed locator.`);
-      } else {
-        throw new Error('AI could not suggest a locator.');
-      }
-    } catch (aiError) {
-      console.error(`[AI Healer] Self-healing failed: ${aiError.message}`);
-      await sendHealNotification({
-        title: '自愈失败（断言）',
-        status: 'error',
-        description,
-        originalLocator: locatorStr,
-        errorDetail: stripAnsi(aiError.message),
-      });
-      throw error; // Re-throw the original Playwright error
-    }
-  }
+  await healEventBus.emit(fullEvent);
 }
+
+/**
+ * aiClick — Click element with healing
+ */
+export async function aiClick(
+  page: Page,
+  locator: string,
+  description: string,
+  options?: { timeout?: number }
+): Promise<void> {
+  const timeout = options?.timeout || 5000;
+
+  // Try original locator first
+  try {
+    await page.locator(locator).click({ timeout });
+    return;
+  } catch (error) {
+    console.warn(`[aiClick] Original locator failed: ${locator}`, error);
+  }
+
+  // Try healing
+  const healedLocator = await heal(page, {
+    originalLocator: locator,
+    description,
+    pageUrl: page.url(),
+    action: 'click',
+    timeoutMs: timeout,
+  });
+
+  await page.locator(healedLocator).click({ timeout });
+}
+
+/**
+ * aiAssert — Assert element visibility/text with healing
+ */
+export async function aiAssert(
+  page: Page,
+  locator: string,
+  description: string,
+  options?: { timeout?: number; expectedText?: string }
+): Promise<void> {
+  const timeout = options?.timeout || 5000;
+
+  // Try original locator first
+  try {
+    await page.locator(locator).first().isVisible({ timeout });
+    return;
+  } catch (error) {
+    console.warn(`[aiAssert] Original locator failed: ${locator}`, error);
+  }
+
+  // Try healing
+  const healedLocator = await heal(page, {
+    originalLocator: locator,
+    description,
+    pageUrl: page.url(),
+    action: 'assert',
+    timeoutMs: timeout,
+    expectedText: options?.expectedText,
+  });
+
+  await page.locator(healedLocator).first().isVisible({ timeout });
+}
+
+/**
+ * aiFill — Fill input element with healing
+ */
+export async function aiFill(
+  page: Page,
+  locator: string,
+  description: string,
+  value: string,
+  options?: { timeout?: number }
+): Promise<void> {
+  const timeout = options?.timeout || 5000;
+
+  // Try original locator first
+  try {
+    await page.locator(locator).fill(value, { timeout });
+    return;
+  } catch (error) {
+    console.warn(`[aiFill] Original locator failed: ${locator}`, error);
+  }
+
+  // Try healing
+  const healedLocator = await heal(page, {
+    originalLocator: locator,
+    description,
+    pageUrl: page.url(),
+    action: 'fill',
+    timeoutMs: timeout,
+    fillValue: value,
+  });
+
+  await page.locator(healedLocator).fill(value, { timeout });
+}
+
+/**
+ * aiLocate — Get healed locator without performing action
+ */
+export async function aiLocate(
+  page: Page,
+  locator: string,
+  description: string,
+  options?: { timeout?: number }
+): Promise<string> {
+  const timeout = options?.timeout || 5000;
+
+  // Try original locator first
+  try {
+    const count = await page.locator(locator).count();
+    if (count > 0) {
+      return locator;
+    }
+  } catch (error) {
+    console.warn(`[aiLocate] Original locator failed: ${locator}`, error);
+  }
+
+  // Try healing
+  const healedLocator = await heal(page, {
+    originalLocator: locator,
+    description,
+    pageUrl: page.url(),
+    action: 'locate',
+    timeoutMs: timeout,
+  });
+
+  return healedLocator;
+}
+
+export { healEventBus, healCache };
