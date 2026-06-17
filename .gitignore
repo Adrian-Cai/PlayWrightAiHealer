@@ -9,6 +9,7 @@ node_modules/
 # Healer runtime data
 .heal-events.jsonl
 healer-cache.json
+test-results/ai-healer-events.jsonl
 
 # Playwright outputs
 playwright-report/

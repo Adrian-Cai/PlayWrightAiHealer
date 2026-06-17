@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { Page } from '@playwright/test';
+import { Page, TestInfo } from '@playwright/test';
 import * as dotenv from 'dotenv';
 import { HealInput, HealEvent } from '../skills/self-healing-locator/contract';
 import { healEventBus } from './heal-event-bus';
@@ -12,134 +12,176 @@ import { healCache } from './heal-cache';
 import { callAIForHeal } from './openai-client';
 import { capturePageState } from './capture-state';
 import { validateHeal, isPassed, getOutput, getErrors } from './quality-gate';
+import { initHealerCollector } from './healer-collector';
 
 dotenv.config();
+
+// Initialize JSONL collector so heal events are written to test-results/ai-healer-events.jsonl
+// The Feishu Reporter reads this file in onEnd() to produce a single summary card.
+// Safe to call multiple times — initHealerCollector is idempotent.
+initHealerCollector();
 
 /**
  * Core heal function — orchestrates the entire self-healing flow
  */
-async function heal(page: Page, input: HealInput): Promise<string> {
+async function heal(
+  page: Page,
+  input: HealInput,
+  testInfo?: TestInfo
+): Promise<string> {
   const startTime = Date.now();
   const eventId = randomUUID();
 
   // Emit start event
-  await emitEvent(page, {
-    id: eventId,
-    type: 'HEAL_START',
-    timestamp: new Date().toISOString(),
-    input,
-    retryCount: 0,
-    durationMs: 0,
-    cacheHit: false,
-  });
+  await emitEvent(
+    page,
+    {
+      id: eventId,
+      type: 'HEAL_START',
+      timestamp: new Date().toISOString(),
+      input,
+      retryCount: 0,
+      durationMs: 0,
+      cacheHit: false,
+    },
+    testInfo
+  );
 
   try {
     // Step 1: Check cache
     const cachedOutput = healCache.get(input.originalLocator, input.pageUrl);
     if (cachedOutput) {
-      await emitEvent(page, {
-        id: eventId,
-        type: 'CACHE_HIT',
-        timestamp: new Date().toISOString(),
-        input,
-        output: cachedOutput,
-        retryCount: 0,
-        durationMs: Date.now() - startTime,
-        cacheHit: true,
-        finalLocator: cachedOutput.locator,
-      });
+      await emitEvent(
+        page,
+        {
+          id: eventId,
+          type: 'CACHE_HIT',
+          timestamp: new Date().toISOString(),
+          input,
+          output: cachedOutput,
+          retryCount: 0,
+          durationMs: Date.now() - startTime,
+          cacheHit: true,
+          finalLocator: cachedOutput.locator,
+        },
+        testInfo
+      );
       return cachedOutput.locator;
     }
 
     // Step 2: Capture page state
     const snapshot = await capturePageState(page);
-    await emitEvent(page, {
-      id: eventId,
-      type: 'STATE_CAPTURED',
-      timestamp: new Date().toISOString(),
-      input,
-      retryCount: 0,
-      durationMs: Date.now() - startTime,
-      cacheHit: false,
-    });
+    await emitEvent(
+      page,
+      {
+        id: eventId,
+        type: 'STATE_CAPTURED',
+        timestamp: new Date().toISOString(),
+        input,
+        retryCount: 0,
+        durationMs: Date.now() - startTime,
+        cacheHit: false,
+      },
+      testInfo
+    );
 
     // Step 3: Call AI for heal
     const aiOutput = await callAIForHeal(input);
-    await emitEvent(page, {
-      id: eventId,
-      type: 'AI_CALLED',
-      timestamp: new Date().toISOString(),
-      input,
-      output: aiOutput,
-      retryCount: 0,
-      durationMs: Date.now() - startTime,
-      cacheHit: false,
-    });
+    await emitEvent(
+      page,
+      {
+        id: eventId,
+        type: 'AI_CALLED',
+        timestamp: new Date().toISOString(),
+        input,
+        output: aiOutput,
+        retryCount: 0,
+        durationMs: Date.now() - startTime,
+        cacheHit: false,
+      },
+      testInfo
+    );
 
     // Step 4: Validate output
     const validationResult = await validateHeal(page, input, aiOutput);
     if (!isPassed(validationResult)) {
-      await emitEvent(page, {
-        id: eventId,
-        type: 'VALIDATION_FAILED',
-        timestamp: new Date().toISOString(),
-        input,
-        output: aiOutput,
-        validation: {
-          valid: false,
-          errors: getErrors(validationResult),
+      await emitEvent(
+        page,
+        {
+          id: eventId,
+          type: 'VALIDATION_FAILED',
+          timestamp: new Date().toISOString(),
+          input,
+          output: aiOutput,
+          validation: {
+            valid: false,
+            errors: getErrors(validationResult),
+          },
+          error: getErrors(validationResult).join('; '),
+          retryCount: 0,
+          durationMs: Date.now() - startTime,
+          cacheHit: false,
         },
-        error: getErrors(validationResult).join('; '),
-        retryCount: 0,
-        durationMs: Date.now() - startTime,
-        cacheHit: false,
-      });
+        testInfo
+      );
 
       throw new Error(`Quality gate failed: ${getErrors(validationResult).join('; ')}`);
     }
 
-    await emitEvent(page, {
-      id: eventId,
-      type: 'VALIDATION_PASSED',
-      timestamp: new Date().toISOString(),
-      input,
-      output: aiOutput,
-      validation: {
-        valid: true,
-        errors: [],
+    await emitEvent(
+      page,
+      {
+        id: eventId,
+        type: 'VALIDATION_PASSED',
+        timestamp: new Date().toISOString(),
+        input,
+        output: aiOutput,
+        validation: {
+          valid: true,
+          errors: [],
+        },
+        retryCount: 0,
+        durationMs: Date.now() - startTime,
+        cacheHit: false,
       },
-      retryCount: 0,
-      durationMs: Date.now() - startTime,
-      cacheHit: false,
-    });
+      testInfo
+    );
 
     // Step 5: Cache and return
     healCache.set(input.originalLocator, input.pageUrl, aiOutput);
 
-    await emitEvent(page, {
-      id: eventId,
-      type: 'HEAL_SUCCESS',
-      timestamp: new Date().toISOString(),
-      input,
-      output: aiOutput,
-      retryCount: 0,
-      durationMs: Date.now() - startTime,
-      cacheHit: false,
-      finalLocator: aiOutput.locator,
-    });
+    await emitEvent(
+      page,
+      {
+        id: eventId,
+        type: 'HEAL_SUCCESS',
+        timestamp: new Date().toISOString(),
+        input,
+        output: aiOutput,
+        retryCount: 0,
+        durationMs: Date.now() - startTime,
+        cacheHit: false,
+        finalLocator: aiOutput.locator,
+      },
+      testInfo
+    );
 
     return aiOutput.locator;
   } catch (error) {
-    await emitEvent(page, {
-      id: eventId,
-      type: 'HEAL_FAILED',
-      timestamp: new Date().toISOString(),
-      input,
-      error: String(error),
-      retryCount: 0,
-      durationMs: Date.now() - startTime,
-      cacheHit: false,
-    });
+    await emitEvent(
+      page,
+      {
+        id: eventId,
+        type: 'HEAL_FAILED',
+        timestamp: new Date().toISOString(),
+        input,
+        error: String(error),
+        retryCount: 0,
+        durationMs: Date.now() - startTime,
+        cacheHit: false,
+      },
+      testInfo
+    );
 
     throw error;
   }
@@ -148,10 +190,14 @@ async function heal(page: Page, input: HealInput): Promise<string> {
 /**
  * Emit an event to the event bus
  */
-async function emitEvent(page: Page, event: Omit<HealEvent, 'testName' | 'jenkinsUrl'>) {
+async function emitEvent(
+  page: Page,
+  event: Omit<HealEvent, 'testName' | 'jenkinsUrl'>,
+  testInfo?: TestInfo
+) {
   const fullEvent: HealEvent = {
     ...event,
-    testName: page.context().browser()?.browserType().name(),
+    testName: testInfo?.title || page.context().browser()?.browserType().name(),
     jenkinsUrl: process.env.JENKINS_BUILD_URL,
   };
 
@@ -165,6 +211,7 @@ export async function aiClick(
   page: Page,
   locator: string,
   description: string,
+  testInfo?: TestInfo,
   options?: { timeout?: number }
 ): Promise<void> {
   const timeout = options?.timeout || 5000;
@@ -178,13 +225,17 @@ export async function aiClick(
   }
 
   // Try healing
-  const healedLocator = await heal(page, {
-    originalLocator: locator,
-    description,
-    pageUrl: page.url(),
-    action: 'click',
-    timeoutMs: timeout,
-  });
+  const healedLocator = await heal(
+    page,
+    {
+      originalLocator: locator,
+      description,
+      pageUrl: page.url(),
+      action: 'click',
+      timeoutMs: timeout,
+    },
+    testInfo
+  );
 
   await page.locator(healedLocator).click({ timeout });
 }
@@ -196,6 +247,7 @@ export async function aiAssert(
   page: Page,
   locator: string,
   description: string,
+  testInfo?: TestInfo,
   options?: { timeout?: number; expectedText?: string }
 ): Promise<void> {
   const timeout = options?.timeout || 5000;
@@ -209,14 +261,18 @@ export async function aiAssert(
   }
 
   // Try healing
-  const healedLocator = await heal(page, {
-    originalLocator: locator,
-    description,
-    pageUrl: page.url(),
-    action: 'assert',
-    timeoutMs: timeout,
-    expectedText: options?.expectedText,
-  });
+  const healedLocator = await heal(
+    page,
+    {
+      originalLocator: locator,
+      description,
+      pageUrl: page.url(),
+      action: 'assert',
+      timeoutMs: timeout,
+      expectedText: options?.expectedText,
+    },
+    testInfo
+  );
 
   await page.locator(healedLocator).first().isVisible({ timeout });
 }
@@ -229,6 +285,7 @@ export async function aiFill(
   locator: string,
   description: string,
   value: string,
+  testInfo?: TestInfo,
   options?: { timeout?: number }
 ): Promise<void> {
   const timeout = options?.timeout || 5000;
@@ -242,14 +299,18 @@ export async function aiFill(
   }
 
   // Try healing
-  const healedLocator = await heal(page, {
-    originalLocator: locator,
-    description,
-    pageUrl: page.url(),
-    action: 'fill',
-    timeoutMs: timeout,
-    fillValue: value,
-  });
+  const healedLocator = await heal(
+    page,
+    {
+      originalLocator: locator,
+      description,
+      pageUrl: page.url(),
+      action: 'fill',
+      timeoutMs: timeout,
+      fillValue: value,
+    },
+    testInfo
+  );
 
   await page.locator(healedLocator).fill(value, { timeout });
 }
@@ -261,6 +322,7 @@ export async function aiLocate(
   page: Page,
   locator: string,
   description: string,
+  testInfo?: TestInfo,
   options?: { timeout?: number }
 ): Promise<string> {
   const timeout = options?.timeout || 5000;
@@ -276,13 +338,17 @@ export async function aiLocate(
   }
 
   // Try healing
-  const healedLocator = await heal(page, {
-    originalLocator: locator,
-    description,
-    pageUrl: page.url(),
-    action: 'locate',
-    timeoutMs: timeout,
-  });
+  const healedLocator = await heal(
+    page,
+    {
+      originalLocator: locator,
+      description,
+      pageUrl: page.url(),
+      action: 'locate',
+      timeoutMs: timeout,
+    },
+    testInfo
+  );
 
   return healedLocator;
 }

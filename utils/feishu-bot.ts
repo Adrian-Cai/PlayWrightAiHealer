@@ -191,6 +191,148 @@ export function initFeishuBot(): void {
   console.log('[Feishu] Feishu bot subscriptions initialized');
 }
 
+export interface HealEventSummary {
+  type: string;
+  input: {
+    originalLocator: string;
+    description: string;
+    action: string;
+    pageUrl: string;
+  };
+  output?: {
+    locator: string;
+    confidence: number;
+    reason: string;
+  };
+  error?: string;
+  durationMs?: number;
+  timestamp?: string;
+  testName?: string;
+}
+
+export interface FailedCaseSummary {
+  title: string;
+  file: string;
+  status: string;
+  error?: string;
+}
+
+export interface CaseSummaryOptions {
+  title: string;
+  status: 'success' | 'error' | 'warning';
+  total: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  healTriggeredCount: number;
+  healSuccessCount: number;
+  healFailedCount: number;
+  failedCases: FailedCaseSummary[];
+  healEvents: HealEventSummary[];
+  reportUrl?: string;
+}
+
+/**
+ * Send a single end-of-run summary card to Feishu.
+ * Called by FeishuReporter.onEnd() in reporters/feishu-reporter.ts
+ */
+export async function sendCaseSummaryNotification(opts: CaseSummaryOptions): Promise<void> {
+  if (!APP_ID || !APP_SECRET || !CHAT_ID) {
+    console.log(`[Feishu] Skipping summary notification (not configured): ${opts.title}`);
+    return;
+  }
+
+  const statusEmoji = {
+    success: '✅',
+    error: '❌',
+    warning: '⚠️',
+  } as const;
+
+  const lines: Array<Array<{ tag: string; text: string }>> = [];
+
+  lines.push([{ tag: 'text', text: `📊 测试总数：${opts.total}` }]);
+  lines.push([{ tag: 'text', text: `✅ 通过：${opts.passed}` }]);
+  lines.push([{ tag: 'text', text: `❌ 失败：${opts.failed}` }]);
+  lines.push([{ tag: 'text', text: `⏭️ 跳过：${opts.skipped}` }]);
+  lines.push([{ tag: 'text', text: `🔧 自愈触发：${opts.healTriggeredCount}` }]);
+  lines.push([{ tag: 'text', text: `✅ 自愈成功：${opts.healSuccessCount}` }]);
+  lines.push([{ tag: 'text', text: `❌ 自愈失败：${opts.healFailedCount}` }]);
+
+  if (opts.reportUrl) {
+    lines.push([{ tag: 'text', text: `📄 测试报告：${opts.reportUrl}` }]);
+  }
+
+  if (opts.failedCases.length > 0) {
+    lines.push([{ tag: 'text', text: `\n失败用例明细：` }]);
+    opts.failedCases.slice(0, 10).forEach((item, index) => {
+      const error = item.error ? item.error.split('\n')[0].substring(0, 120) : '-';
+      lines.push([
+        {
+          tag: 'text',
+          text:
+            `\n${index + 1}. ${item.title}\n` +
+            `文件：${item.file}\n` +
+            `状态：${item.status}\n` +
+            `错误：${error}`,
+        },
+      ]);
+    });
+  }
+
+  if (opts.healEvents.length > 0) {
+    const notable = opts.healEvents.filter(
+      (e) => e.type === 'HEAL_SUCCESS' || e.type === 'HEAL_FAILED'
+    );
+    if (notable.length > 0) {
+      lines.push([{ tag: 'text', text: `\nAI 自愈明细：` }]);
+      notable.slice(0, 10).forEach((item, index) => {
+        lines.push([
+          {
+            tag: 'text',
+            text:
+              `\n${index + 1}. [${item.type}] ${item.input.description}\n` +
+              `原始定位器：${item.input.originalLocator}\n` +
+              `AI 定位器：${item.output?.locator || '-'}\n` +
+              `动作：${item.input.action}`,
+          },
+        ]);
+      });
+    }
+  }
+
+  const token = await getTenantAccessToken();
+
+  const payload = {
+    receive_id: CHAT_ID,
+    msg_type: 'post',
+    content: JSON.stringify({
+      zh_cn: {
+        title: `${statusEmoji[opts.status]} ${opts.title}`,
+        content: lines,
+      },
+    }),
+  };
+
+  try {
+    await axios.post(
+      'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+    console.log(`[Feishu] Summary notification sent: ${opts.title}`);
+  } catch (error: any) {
+    console.error(`[Feishu] Error sending summary notification: ${error.message}`);
+    if (error.response?.data) {
+      console.error(`[Feishu] Response: ${JSON.stringify(error.response.data)}`);
+    }
+  }
+}
+
 /**
  * Send a generic Feishu message (for backward compatibility)
  */
