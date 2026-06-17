@@ -26,8 +26,9 @@ pipeline {
 
         stage('Install Dependencies') {
             steps {
+                // package-lock.json 已与 package.json 同步，ts-node 随 npm ci 一并安装，
+                // 不再需要额外的 npm install --no-save ts-node
                 sh 'npm ci'
-                sh 'npm install --no-save ts-node@^10.9.2'
             }
         }
 
