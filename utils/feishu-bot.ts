@@ -338,10 +338,10 @@ export async function sendCaseSummaryNotification(opts: CaseSummaryOptions): Pro
   elements.push({
     tag: 'div',
     fields: [
-      field('📊 测试总数', String(opts.total)),
-      field('✅ 通过', String(opts.passed)),
-      field('❌ 失败', String(opts.failed)),
-      field('⏭️ 跳过', String(opts.skipped)),
+      field('测试总数', String(opts.total)),
+      field('通过', String(opts.passed)),
+      field('失败', String(opts.failed)),
+      field('跳过', String(opts.skipped)),
     ],
   });
 
