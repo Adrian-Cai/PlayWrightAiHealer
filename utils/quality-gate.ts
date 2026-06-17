@@ -32,14 +32,26 @@ export async function validateHeal(
     const locatorElements = await page.locator(output.locator).count();
 
     if (locatorElements === 0) {
-      errors.push(`Locator matches 0 elements on page: ${output.locator}`);
+      // Early return: element doesn't exist, so subsequent text/enabled checks
+      // are meaningless AND would hang waiting for actionability on a missing element.
+      return {
+        status: 'fail',
+        errors: [`Locator matches 0 elements on page: ${output.locator}`],
+      };
     } else if (locatorElements > MAX_MATCHING_ELEMENTS) {
-      errors.push(
-        `Locator matches ${locatorElements} elements (expected 1): ${output.locator}`
-      );
+      // Early return: not unique, text/enabled checks would be ambiguous.
+      return {
+        status: 'fail',
+        errors: [
+          `Locator matches ${locatorElements} elements (expected 1): ${output.locator}`,
+        ],
+      };
     }
   } catch (locatorError) {
-    errors.push(`Locator is invalid or causes error: ${locatorError}`);
+    return {
+      status: 'fail',
+      errors: [`Locator is invalid or causes error: ${locatorError}`],
+    };
   }
 
   // 3. If action expects text, verify text match

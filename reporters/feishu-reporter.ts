@@ -14,7 +14,8 @@ import type {
 } from '@playwright/test/reporter';
 
 import { readHealEvents } from '../utils/healer-collector';
-import { sendCaseSummaryNotification } from '../utils/feishu-bot';
+import { readProposals } from '../utils/healer-proposal-store';
+import { sendCaseSummaryNotification, sendReviewCard } from '../utils/feishu-bot';
 
 interface CaseResult {
   title: string;
@@ -88,25 +89,48 @@ class FeishuReporter implements Reporter {
       ? `${normalizedBase}artifact/playwright-report/*zip*/playwright-report.zip`
       : '';
 
-    await sendCaseSummaryNotification({
-      title,
-      status,
-      total: this.total,
-      passed: this.passed,
-      failed: this.failed,
-      skipped: this.skipped,
-      healTriggeredCount,
-      healSuccessCount,
-      healFailedCount,
-      failedCases: this.caseResults,
-      healEvents,
-      reportUrl,
-      reportArchiveUrl,
-    });
+    // If there are pending (AI-healed, awaiting review) proposals, send a
+    // review card instead of the plain summary. The review card lists each
+    // old→new locator so a human can decide. Phase 3 adds approve/reject
+    // buttons to this card.
+    const proposals = readProposals();
+    const pendingCount = proposals.filter((p) => p.status === 'pending').length;
 
-    console.log(
-      `[FeishuReporter] Summary sent. total=${this.total} passed=${this.passed} failed=${this.failed} skipped=${this.skipped} | heal success=${healSuccessCount} failed=${healFailedCount}`
-    );
+    if (pendingCount > 0) {
+      await sendReviewCard({
+        title: '⚠️ Playwright AI 自愈待审核',
+        status: 'warning',
+        total: this.total,
+        passed: this.passed,
+        failed: this.failed,
+        skipped: this.skipped,
+        proposals,
+        reportUrl,
+        reportArchiveUrl,
+      });
+      console.log(
+        `[FeishuReporter] Review card sent with ${pendingCount} pending proposal(s).`
+      );
+    } else {
+      await sendCaseSummaryNotification({
+        title,
+        status,
+        total: this.total,
+        passed: this.passed,
+        failed: this.failed,
+        skipped: this.skipped,
+        healTriggeredCount,
+        healSuccessCount,
+        healFailedCount,
+        failedCases: this.caseResults,
+        healEvents,
+        reportUrl,
+        reportArchiveUrl,
+      });
+      console.log(
+        `[FeishuReporter] Summary sent. total=${this.total} passed=${this.passed} failed=${this.failed} skipped=${this.skipped} | heal success=${healSuccessCount} failed=${healFailedCount}`
+      );
+    }
   }
 }
 

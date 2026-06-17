@@ -6,13 +6,15 @@
 import { randomUUID } from 'crypto';
 import { Page, TestInfo } from '@playwright/test';
 import * as dotenv from 'dotenv';
-import { HealInput, HealEvent } from '../skills/self-healing-locator/contract';
+import { HealInput, HealEvent, HealOutput } from '../skills/self-healing-locator/contract';
 import { healEventBus } from './heal-event-bus';
 import { healCache } from './heal-cache';
 import { callAIForHeal } from './openai-client';
 import { capturePageState } from './capture-state';
 import { validateHeal, isPassed, getOutput, getErrors } from './quality-gate';
 import { initHealerCollector } from './healer-collector';
+import { getLocator } from './locator-repository';
+import { addProposal } from './healer-proposal-store';
 
 dotenv.config();
 
@@ -22,13 +24,26 @@ dotenv.config();
 initHealerCollector();
 
 /**
+ * Structured heal result returned by heal(). Carries enough info for the
+ * ByKey wrappers to record a HealProposal (oldLocator → newLocator + confidence + reason).
+ */
+export interface HealResult {
+  /** The locator to use (from AI or cache). */
+  locator: string;
+  /** The full AI output (locator / strategy / confidence / reason). */
+  output: HealOutput;
+  /** Whether this result came from the in-run cache. */
+  cacheHit: boolean;
+}
+
+/**
  * Core heal function — orchestrates the entire self-healing flow
  */
 async function heal(
   page: Page,
   input: HealInput,
   testInfo?: TestInfo
-): Promise<string> {
+): Promise<HealResult> {
   const startTime = Date.now();
   const eventId = randomUUID();
 
@@ -66,7 +81,7 @@ async function heal(
         },
         testInfo
       );
-      return cachedOutput.locator;
+      return { locator: cachedOutput.locator, output: cachedOutput, cacheHit: true };
     }
 
     // Step 2: Capture page state
@@ -166,7 +181,7 @@ async function heal(
       testInfo
     );
 
-    return aiOutput.locator;
+    return { locator: aiOutput.locator, output: aiOutput, cacheHit: false };
   } catch (error) {
     await emitEvent(
       page,
@@ -225,7 +240,7 @@ export async function aiClick(
   }
 
   // Try healing
-  const healedLocator = await heal(
+  const result = await heal(
     page,
     {
       originalLocator: locator,
@@ -237,7 +252,7 @@ export async function aiClick(
     testInfo
   );
 
-  await page.locator(healedLocator).click({ timeout });
+  await page.locator(result.locator).click({ timeout });
 }
 
 /**
@@ -261,7 +276,7 @@ export async function aiAssert(
   }
 
   // Try healing
-  const healedLocator = await heal(
+  const result = await heal(
     page,
     {
       originalLocator: locator,
@@ -274,7 +289,7 @@ export async function aiAssert(
     testInfo
   );
 
-  await page.locator(healedLocator).first().isVisible({ timeout });
+  await page.locator(result.locator).first().isVisible({ timeout });
 }
 
 /**
@@ -299,7 +314,7 @@ export async function aiFill(
   }
 
   // Try healing
-  const healedLocator = await heal(
+  const result = await heal(
     page,
     {
       originalLocator: locator,
@@ -312,7 +327,7 @@ export async function aiFill(
     testInfo
   );
 
-  await page.locator(healedLocator).fill(value, { timeout });
+  await page.locator(result.locator).fill(value, { timeout });
 }
 
 /**
@@ -338,7 +353,7 @@ export async function aiLocate(
   }
 
   // Try healing
-  const healedLocator = await heal(
+  const result = await heal(
     page,
     {
       originalLocator: locator,
@@ -350,7 +365,201 @@ export async function aiLocate(
     testInfo
   );
 
-  return healedLocator;
+  return result.locator;
 }
 
 export { healEventBus, healCache };
+
+// ---------------------------------------------------------------------------
+// ByKey wrappers — locators are resolved from locator-store.json by key
+// ---------------------------------------------------------------------------
+//
+// These wrappers resolve the locator string from the central locator-store.json
+// and, on heal success/failure, record a HealProposal for human review:
+//   1. Locators live in one version-controlled file (locator-store.json)
+//   2. The Feishu callback server (Phase 3) can replace a locator by editing
+//      only that JSON file, never touching test code
+//   3. AI never modifies spec files — it only suggests, humans approve
+//
+// On heal failure these wrappers throw the ORIGINAL locator error (not the
+// AI/heal error) so the test report points at the real failure. A 'failed'
+// proposal is still recorded for audit.
+
+interface ProposalMeta {
+  locatorKey: string;
+  elementName: string;
+  action: 'click' | 'assert' | 'fill' | 'locate';
+  testInfo?: TestInfo;
+  page: Page;
+}
+
+/**
+ * Record a proposal after a heal attempt. Best-effort: proposal-store errors
+ * are logged but never break the test flow.
+ */
+function recordProposal(
+  meta: ProposalMeta,
+  oldLocator: string,
+  result: HealResult | null,
+  errorDetail?: string
+): void {
+  try {
+    addProposal({
+      runId: process.env.RUN_ID,
+      testName: meta.testInfo?.title,
+      testFile: meta.testInfo?.file,
+      pageUrl: meta.page.url(),
+      locatorKey: meta.locatorKey,
+      elementName: meta.elementName,
+      action: meta.action,
+      oldLocator,
+      newLocator: result?.output.locator,
+      confidence: result?.output.confidence,
+      reason: result?.output.reason,
+      errorDetail,
+    });
+  } catch (err) {
+    console.warn('[ai-healer] failed to record proposal:', err);
+  }
+}
+
+export async function aiClickByKey(
+  page: Page,
+  locatorKey: string,
+  description: string,
+  testInfo?: TestInfo,
+  options?: { timeout?: number }
+): Promise<void> {
+  const timeout = options?.timeout || 5000;
+  const locator = getLocator(locatorKey);
+  const meta: ProposalMeta = { locatorKey, elementName: description, action: 'click', testInfo, page };
+
+  try {
+    await page.locator(locator).click({ timeout });
+    return;
+  } catch (originError: any) {
+    console.warn(`[aiClickByKey] Original locator failed: ${locator}`, originError);
+    try {
+      const result = await heal(
+        page,
+        { originalLocator: locator, locatorKey, description, pageUrl: page.url(), action: 'click', timeoutMs: timeout },
+        testInfo
+      );
+      await page.locator(result.locator).click({ timeout });
+      recordProposal(meta, locator, result);
+    } catch (healError: any) {
+      recordProposal(meta, locator, null, String(healError));
+      throw originError;
+    }
+  }
+}
+
+export async function aiAssertByKey(
+  page: Page,
+  locatorKey: string,
+  description: string,
+  testInfo?: TestInfo,
+  options?: { timeout?: number; expectedText?: string }
+): Promise<void> {
+  const timeout = options?.timeout || 5000;
+  const locator = getLocator(locatorKey);
+  const meta: ProposalMeta = { locatorKey, elementName: description, action: 'assert', testInfo, page };
+
+  try {
+    await page.locator(locator).first().isVisible({ timeout });
+    return;
+  } catch (originError: any) {
+    console.warn(`[aiAssertByKey] Original locator failed: ${locator}`, originError);
+    try {
+      const result = await heal(
+        page,
+        { originalLocator: locator, locatorKey, description, pageUrl: page.url(), action: 'assert', timeoutMs: timeout, expectedText: options?.expectedText },
+        testInfo
+      );
+      await page.locator(result.locator).first().isVisible({ timeout });
+      recordProposal(meta, locator, result);
+    } catch (healError: any) {
+      recordProposal(meta, locator, null, String(healError));
+      throw originError;
+    }
+  }
+}
+
+export async function aiFillByKey(
+  page: Page,
+  locatorKey: string,
+  description: string,
+  value: string,
+  testInfo?: TestInfo,
+  options?: { timeout?: number }
+): Promise<void> {
+  const timeout = options?.timeout || 5000;
+  const locator = getLocator(locatorKey);
+  const meta: ProposalMeta = { locatorKey, elementName: description, action: 'fill', testInfo, page };
+
+  try {
+    await page.locator(locator).fill(value, { timeout });
+    return;
+  } catch (originError: any) {
+    console.warn(`[aiFillByKey] Original locator failed: ${locator}`, originError);
+    try {
+      const result = await heal(
+        page,
+        { originalLocator: locator, locatorKey, description, pageUrl: page.url(), action: 'fill', timeoutMs: timeout, fillValue: value },
+        testInfo
+      );
+      await page.locator(result.locator).fill(value, { timeout });
+      recordProposal(meta, locator, result);
+    } catch (healError: any) {
+      recordProposal(meta, locator, null, String(healError));
+      throw originError;
+    }
+  }
+}
+
+export async function aiLocateByKey(
+  page: Page,
+  locatorKey: string,
+  description: string,
+  testInfo?: TestInfo,
+  options?: { timeout?: number }
+): Promise<string> {
+  const timeout = options?.timeout || 5000;
+  const locator = getLocator(locatorKey);
+  const meta: ProposalMeta = { locatorKey, elementName: description, action: 'locate', testInfo, page };
+
+  try {
+    const count = await page.locator(locator).count();
+    if (count > 0) {
+      return locator;
+    }
+  } catch (originError: any) {
+    console.warn(`[aiLocateByKey] Original locator failed: ${locator}`, originError);
+    try {
+      const result = await heal(
+        page,
+        { originalLocator: locator, locatorKey, description, pageUrl: page.url(), action: 'locate', timeoutMs: timeout },
+        testInfo
+      );
+      recordProposal(meta, locator, result);
+      return result.locator;
+    } catch (healError: any) {
+      recordProposal(meta, locator, null, String(healError));
+      throw originError;
+    }
+  }
+
+  // count === 0 path: locator exists syntactically but matches nothing → heal
+  try {
+    const result = await heal(
+      page,
+      { originalLocator: locator, locatorKey, description, pageUrl: page.url(), action: 'locate', timeoutMs: timeout },
+      testInfo
+    );
+    recordProposal(meta, locator, result);
+    return result.locator;
+  } catch (healError: any) {
+    recordProposal(meta, locator, null, String(healError));
+    throw new Error(`aiLocateByKey: locator matched 0 elements and heal failed for key="${locatorKey}"`);
+  }
+}

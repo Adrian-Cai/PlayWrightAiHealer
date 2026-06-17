@@ -11,6 +11,12 @@ export interface HealInput {
   /** 失效的原始定位器 */
   originalLocator: string;
 
+  /**
+   * 定位器在 locator-store.json 中的 key（可选）。
+   * 当通过 aiXxxByKey 调用时填写，便于事件/提案追溯到集中管理的 locator。
+   */
+  locatorKey?: string;
+
   /** 元素的非位置性描述（例："确认按钮"、"用户昵称输入框"） */
   description: string;
 

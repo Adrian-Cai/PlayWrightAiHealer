@@ -479,6 +479,147 @@ export async function sendCaseSummaryNotification(opts: CaseSummaryOptions): Pro
 }
 
 /**
+ * Send a "pending review" interactive card listing AI heal proposals.
+ *
+ * Phase 2: card is display-only (no buttons). Phase 3 will add
+ * [确认替换] / [拒绝] buttons per proposal whose value carries the proposalId
+ * for the callback server to consume.
+ *
+ * Only pending proposals (AI healed successfully, awaiting human review) are
+ * shown with full detail. Failed proposals (AI couldn't heal) are listed
+ * compactly for awareness.
+ */
+export interface ReviewCardProposal {
+  id: string;
+  status: 'pending' | 'approved' | 'rejected' | 'failed';
+  testName?: string;
+  testFile?: string;
+  pageUrl?: string;
+  locatorKey: string;
+  elementName: string;
+  action: string;
+  oldLocator: string;
+  newLocator?: string;
+  confidence?: number;
+  reason?: string;
+  errorDetail?: string;
+}
+
+export interface ReviewCardOptions {
+  title: string;
+  status: 'success' | 'error' | 'warning';
+  total: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  proposals: ReviewCardProposal[];
+  reportUrl?: string;
+  reportArchiveUrl?: string;
+}
+
+export async function sendReviewCard(opts: ReviewCardOptions): Promise<void> {
+  if (!APP_ID || !APP_SECRET || !CHAT_ID) {
+    console.log(`[Feishu] Skipping review card (not configured): ${opts.title}`);
+    return;
+  }
+
+  const pending = opts.proposals.filter((p) => p.status === 'pending' && p.newLocator);
+  const failed = opts.proposals.filter((p) => p.status === 'failed');
+
+  const elements: any[] = [];
+
+  // --- Overview ---
+  elements.push({
+    tag: 'div',
+    fields: [
+      field('测试总数', String(opts.total)),
+      field('通过', String(opts.passed)),
+      field('失败', String(opts.failed)),
+      field('跳过', String(opts.skipped)),
+    ],
+  });
+  elements.push(hr());
+  elements.push({
+    tag: 'div',
+    fields: [
+      field('⏳ 待审核', String(pending.length)),
+      field('❌ 自愈失败', String(failed.length)),
+    ],
+  });
+
+  // --- Pending proposals (full detail) ---
+  if (pending.length > 0) {
+    elements.push(hr());
+    elements.push(divMd(`**🤖 待审核修复项（共 ${pending.length} 个）**`));
+    const callbackToken = process.env.HEALER_CALLBACK_TOKEN || '';
+    pending.slice(0, 10).forEach((item, index) => {
+      const conf =
+        typeof item.confidence === 'number' && item.confidence >= 0 && item.confidence <= 1
+          ? `${(item.confidence * 100).toFixed(0)}%`
+          : '-';
+      elements.push(
+        divMd(
+          `${index + 1}. **${escapeMdInline(item.elementName)}**\n` +
+            `📝 ${escapeMd(truncate(item.testName || '-', 60))}\n` +
+            `🔑 \`${escapeMd(item.locatorKey)}\`  🎯 ${escapeMd(item.action)}\n` +
+            `❌ ${code(item.oldLocator)}\n` +
+            `✅ ${code(item.newLocator || '-')}\n` +
+            `💯 ${conf}  💬 ${escapeMd(truncate(item.reason || '-', 120))}`
+        )
+      );
+      // Phase 3: approve/reject buttons. value carries proposalId + token.
+      // The callback server (scripts/feishu-callback-server.js) reads
+      // evt.action.value to identify the action and authorize it.
+      // token is an optional shared secret as a defense-in-depth layer on top
+      // of the SDK's built-in signature verification.
+      elements.push({
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '✅ 确认替换' },
+            type: 'primary',
+            value: { action: 'approve_locator', proposalId: item.id, token: callbackToken },
+          },
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '❌ 拒绝' },
+            type: 'danger',
+            value: { action: 'reject_locator', proposalId: item.id, token: callbackToken },
+          },
+        ],
+      });
+    });
+    if (pending.length > 10) {
+      elements.push(noteMd(`…还有 ${pending.length - 10} 个待审核项未展示`));
+    }
+  }
+
+  // --- Failed proposals (compact) ---
+  if (failed.length > 0) {
+    elements.push(hr());
+    elements.push(divMd(`**⚠️ 自愈失败项（共 ${failed.length} 个）**`));
+    const blocks: string[] = failed.slice(0, 5).map((item, index) =>
+      `${index + 1}. ${escapeMdInline(item.elementName)}  🔑 \`${escapeMd(item.locatorKey)}\`\n` +
+      `❌ ${code(item.oldLocator)}\n` +
+      `💬 ${escapeMd(truncate(item.errorDetail || '-', 120))}`
+    );
+    elements.push(divMd(blocks.join('\n\n')));
+  }
+
+  // --- Report links ---
+  if (opts.reportUrl || opts.reportArchiveUrl) {
+    elements.push(hr());
+    const actions: any[] = [];
+    if (opts.reportUrl) actions.push(linkButton('📄 查看测试报告', opts.reportUrl, 'primary'));
+    if (opts.reportArchiveUrl) actions.push(linkButton('⬇️ 下载报告压缩包', opts.reportArchiveUrl, 'default'));
+    elements.push({ tag: 'action', actions });
+  }
+
+  await sendCard(opts.title, opts.status, elements, { retries: 2 });
+}
+
+/**
  * Send a generic Feishu message (for backward compatibility)
  */
 export async function sendFeishuMessage(
