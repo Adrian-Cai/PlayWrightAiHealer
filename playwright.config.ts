@@ -7,10 +7,19 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
+  
+  // Global setup/teardown for heal system initialization
+  globalSetup: require.resolve('./playwright.global-setup.ts'),
+  globalTeardown: require.resolve('./playwright.global-teardown.ts'),
+  
+  // Increased timeout for AI healing operations
+  timeout: 30 * 1000, // 30 seconds per test
+  
   use: {
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
+  
   projects: [
     {
       name: 'chromium',

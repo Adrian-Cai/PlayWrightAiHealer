@@ -3,9 +3,9 @@
  * Orchestrates: cache → capture → AI → quality gate → retry → events
  */
 
+import { randomUUID } from 'crypto';
 import { Page } from '@playwright/test';
 import * as dotenv from 'dotenv';
-import { v4 as uuidv4 } from 'uuid';
 import { HealInput, HealEvent } from '../skills/self-healing-locator/contract';
 import { healEventBus } from './heal-event-bus';
 import { healCache } from './heal-cache';
@@ -20,7 +20,7 @@ dotenv.config();
  */
 async function heal(page: Page, input: HealInput): Promise<string> {
   const startTime = Date.now();
-  const eventId = uuidv4();
+  const eventId = randomUUID();
 
   // Emit start event
   await emitEvent(page, {
@@ -151,7 +151,7 @@ async function heal(page: Page, input: HealInput): Promise<string> {
 async function emitEvent(page: Page, event: Omit<HealEvent, 'testName' | 'jenkinsUrl'>) {
   const fullEvent: HealEvent = {
     ...event,
-    testName: page.context().browser?.browserType.name,
+    testName: page.context().browser()?.browserType().name(),
     jenkinsUrl: process.env.JENKINS_BUILD_URL,
   };
 

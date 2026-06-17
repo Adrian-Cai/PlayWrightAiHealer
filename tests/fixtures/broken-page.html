@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Case 自愈测试页面</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f5f5f5;
+            color: #000;
+        }
+        
+        .layout {
+            display: flex;
+            min-height: 100vh;
+        }
+        
+        .sidebar {
+            width: 200px;
+            background-color: #001529;
+            color: white;
+            padding: 0;
+        }
+        
+        /* 原始类名 */
+        .ant-menu {
+            background-color: #001529;
+        }
+        
+        /* 变化后的类名（用于测试自愈） */
+        .new-menu {
+            background-color: #001529;
+        }
+        
+        .menu-item {
+            padding: 12px 16px;
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .menu-item:hover {
+            background-color: #177ddc;
+        }
+        
+        /* 原始项目类名 */
+        .ant-menu-item {
+            padding: 12px 16px;
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: block;
+        }
+        
+        /* 变化后的项目类名 */
+        .new-menu-item {
+            padding: 12px 16px;
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: block;
+        }
+        
+        .new-menu-item:hover {
+            background-color: #177ddc;
+        }
+        
+        .content {
+            flex: 1;
+            padding: 24px;
+            background-color: white;
+            margin: 16px;
+            border-radius: 4px;
+        }
+        
+        h1 {
+            margin-bottom: 24px;
+            font-size: 24px;
+        }
+        
+        .button {
+            background-color: #177ddc;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+        }
+        
+        .button:hover {
+            background-color: #1765ad;
+        }
+        
+        /* 原始按钮类名 */
+        .ant-btn {
+            background-color: #177ddc;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        
+        .ant-btn:hover {
+            background-color: #1765ad;
+        }
+        
+        /* 变化后的按钮类名 */
+        .new-button {
+            background-color: #177ddc;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        
+        .new-button:hover {
+            background-color: #1765ad;
+        }
+        
+        .form-group {
+            margin-bottom: 16px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        
+        input, textarea {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #177ddc;
+            box-shadow: 0 0 0 2px rgba(23, 125, 220, 0.2);
+        }
+        
+        .status-message {
+            padding: 12px 16px;
+            border-radius: 4px;
+            margin-top: 16px;
+            display: none;
+        }
+        
+        .status-message.success {
+            background-color: #f6ffed;
+            color: #274e0f;
+            border: 1px solid #b7eb8f;
+            display: block;
+        }
+        
+        .status-message.error {
+            background-color: #fff1f0;
+            color: #5f0000;
+            border: 1px solid #ffa39e;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <div class="sidebar">
+            <div class="new-menu">
+                <div class="new-menu-item" data-testid="manual-confirm">人工确认</div>
+                <div class="new-menu-item" data-testid="auto-confirm">自动确认</div>
+                <div class="new-menu-item" data-testid="settings">设置</div>
+            </div>
+        </div>
+        
+        <div class="content">
+            <h1>AI Case 自愈定位器测试</h1>
+            
+            <div id="manual-confirm-section" style="display: none;">
+                <h2>人工确认</h2>
+                <p>需要确认的项目：</p>
+                <div class="form-group">
+                    <label>项目信息</label>
+                    <textarea id="project-info" rows="4" placeholder="输入项目信息"></textarea>
+                </div>
+                <button class="new-button" id="batch-confirm-btn" data-testid="batch-confirm">批量确认</button>
+                <button class="new-button" id="reset-btn" data-testid="reset">重置</button>
+                <div id="status" class="status-message"></div>
+            </div>
+            
+            <div id="auto-confirm-section">
+                <h2>自动确认</h2>
+                <p>此页面用于测试 Playwright AI 自愈定位器功能。</p>
+                <p>定位器会根据 DOM 结构的变化自动调整。</p>
+                <button class="new-button" id="test-locate-btn" data-testid="test-locate">测试定位</button>
+                <div id="output" class="status-message"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Show manual confirm section
+        document.querySelector('[data-testid="manual-confirm"]').addEventListener('click', () => {
+            document.getElementById('manual-confirm-section').style.display = 'block';
+            document.getElementById('auto-confirm-section').style.display = 'none';
+        });
+        
+        document.querySelector('[data-testid="auto-confirm"]').addEventListener('click', () => {
+            document.getElementById('auto-confirm-section').style.display = 'block';
+            document.getElementById('manual-confirm-section').style.display = 'none';
+        });
+        
+        // Batch confirm button
+        document.getElementById('batch-confirm-btn').addEventListener('click', () => {
+            const info = document.getElementById('project-info').value;
+            if (info.trim()) {
+                const status = document.getElementById('status');
+                status.textContent = '✓ 已确认：' + info;
+                status.className = 'status-message success';
+            }
+        });
+        
+        // Reset button
+        document.getElementById('reset-btn').addEventListener('click', () => {
+            document.getElementById('project-info').value = '';
+            document.getElementById('status').className = 'status-message';
+            document.getElementById('status').textContent = '';
+        });
+        
+        // Test locate button
+        document.getElementById('test-locate-btn').addEventListener('click', () => {
+            const output = document.getElementById('output');
+            output.textContent = '✓ 定位成功：找到按钮元素';
+            output.className = 'status-message success';
+        });
+    </script>
+</body>
+</html>
