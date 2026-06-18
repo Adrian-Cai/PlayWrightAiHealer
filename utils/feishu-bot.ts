@@ -74,7 +74,8 @@ function hr() {
 
 /** Small grey note line (good for timestamps / secondary info). */
 function noteMd(content: string) {
-  return { tag: 'note', text: { tag: 'lark_md', content } };
+  // note 元素用 elements 数组（不是 text 字段），每项是 plain_text/lark_md
+  return { tag: 'note', elements: [{ tag: 'lark_md', content }] };
 }
 
 /** A clickable button that opens a URL. */
@@ -118,8 +119,11 @@ async function sendCard(
 ): Promise<void> {
   const { rethrow = false, retries = 0 } = options;
 
+  // update_multi: true is REQUIRED for the card to be patchable later
+  // (Feishu rejects PATCH /im/v1/messages/:id without it). The callback
+  // server relies on this to update the card after approve/reject.
   const card = {
-    config: { wide_screen_mode: true, enable_forward: true },
+    config: { wide_screen_mode: true, enable_forward: true, update_multi: true },
     header: {
       title: { tag: 'plain_text', content: `${statusToEmoji(status)} ${title}` },
       template: statusToTemplate(status),

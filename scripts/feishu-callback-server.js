@@ -51,6 +51,14 @@ const {
 /**
  * Build an updated card body that replaces the action buttons with a result
  * note, so the reviewer sees immediate in-place feedback.
+ *
+ * NOTE on update_multi: the patch API request body has a top-level
+ * `update_multi` field (true = update all messages sent with the same
+ * content; false = update only this one message). We pass false here because
+ * we only want to update the single clicked card. The config.update_multi
+ * inside the card JSON is a DIFFERENT thing (it's a prerequisite flag that
+ * must be true on the ORIGINAL card for patch to work at all — set in
+ * feishu-bot.ts sendCard). These two are unrelated despite the same name.
  */
 function buildUpdatedCard(outcome, originalProposal) {
   const statusLine = outcome.ok
@@ -70,10 +78,17 @@ function buildUpdatedCard(outcome, originalProposal) {
       tag: 'div',
       text: { tag: 'lark_md', content: statusLine },
     },
+    {
+      // note 元素用 elements 数组（不是 text），每项是 plain_text/lark_md
+      tag: 'note',
+      elements: [
+        { tag: 'plain_text', content: `🕐 处理时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}` },
+      ],
+    },
   ];
 
   return {
-    config: { wide_screen_mode: true },
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       template: outcome.ok ? 'green' : 'red',
       title: { tag: 'plain_text', content: outcome.ok ? '✅ 已处理' : '⚠️ 处理失败' },
@@ -93,6 +108,21 @@ function findProposal(proposalId) {
   } catch {
     return null;
   }
+}
+
+// --- Helpers ---
+
+/**
+ * Race a promise against a timeout so a hung SDK call can't block the
+ * callback response indefinitely. Resolves to the original value or rejects
+ * with a timeout error.
+ */
+function withTimeout(promise, ms, label = 'operation') {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 // --- Long-connection setup ---
@@ -133,24 +163,64 @@ const dispatcher = new lark.EventDispatcher({}).register({
       console.warn(`[FeishuCallback] ✗ ${outcome.error}`);
     }
 
-    // Update the original card in-place so the reviewer sees the outcome
-    // and the buttons disappear (prevents double-clicks).
-    if (event?.messageId) {
+    const messageId =
+      event?.messageId || event?.message_id || event?.open_message_id ||
+      event?.context?.open_message_id;
+    console.log(`[FeishuCallback] messageId: ${messageId || '(missing)'}`);
+
+    // ── Send a reply message for reliable visual feedback ──
+    // The PATCH API returns success but the Feishu client often doesn't
+    // re-render the card (known behavior). A reply message is a new message,
+    // guaranteed to appear in the chat, giving the reviewer immediate
+    // confirmation that their click was processed.
+    if (messageId && outcome.ok) {
       try {
-        const card = buildUpdatedCard(outcome, originalProposal);
-        await client.im.message.patch({
-          path: { message_id: event.messageId },
-          data: { content: JSON.stringify(card) },
-        });
-        console.log(`[FeishuCallback] Card updated: ${event.messageId}`);
+        const replyText = outcome.action === 'approve_locator'
+          ? `✅ 已确认替换定位器 [${outcome.proposal.locatorKey}]\n${outcome.proposal.oldLocator} → ${outcome.proposal.newLocator}`
+          : `❌ 已拒绝修复建议 [${outcome.proposal.locatorKey}]`;
+        const resp = await withTimeout(
+          client.im.message.reply({
+            path: { message_id: messageId },
+            data: {
+              msg_type: 'text',
+              content: JSON.stringify({ text: replyText }),
+            },
+          }),
+          10000,
+          'im.message.reply'
+        );
+        if (resp && typeof resp.code === 'number' && resp.code !== 0) {
+          console.error(`[FeishuCallback] Reply rejected: code=${resp.code} msg=${resp.msg || ''}`);
+        } else {
+          console.log(`[FeishuCallback] Reply sent to confirm ${value.action}`);
+        }
       } catch (err) {
-        // Non-fatal: the locator/proposal state is already persisted; card
-        // update is cosmetic. Log and move on.
-        console.error('[FeishuCallback] Failed to update card:', err?.message || err);
+        console.error('[FeishuCallback] Failed to send reply:', err?.message || err);
       }
     }
 
-    // Returning {} tells the SDK not to auto-respond; we patched the card ourselves.
+    // ── Best-effort card update via PATCH (may not visually refresh) ──
+    if (messageId) {
+      try {
+        const card = buildUpdatedCard(outcome, originalProposal);
+        const resp = await withTimeout(
+          client.im.message.patch({
+            path: { message_id: messageId },
+            data: { content: JSON.stringify(card) },
+          }),
+          10000,
+          'im.message.patch'
+        );
+        if (resp && typeof resp.code === 'number' && resp.code !== 0) {
+          console.error(`[FeishuCallback] Patch rejected: code=${resp.code} msg=${resp.msg || ''}`);
+        } else {
+          console.log(`[FeishuCallback] Card patched: ${messageId}`);
+        }
+      } catch (err) {
+        console.error('[FeishuCallback] Patch failed (non-fatal):', err?.message || err);
+      }
+    }
+
     return {};
   },
 });
