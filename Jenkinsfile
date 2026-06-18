@@ -25,6 +25,12 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
+                // checkout scm 自动拉取触发构建的分支（包括 PR 分支）。
+                // PR 自动触发需在 Jenkins job 配置里启用：
+                //   - Multibranch Pipeline：自动发现 CNB 分支和 PR
+                //   - 或在 CNB 仓库设置 → Webhook → 推送到 Jenkins Generic Webhook Trigger
+                // Phase 4 闭环：飞书点"确认替换并提 PR" → CNB 出现 PR →
+                // Jenkins 自动重跑测试 → 验证新 locator 有效 → 人工合并。
                 checkout scm
             }
         }

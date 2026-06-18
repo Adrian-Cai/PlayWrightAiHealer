@@ -581,7 +581,7 @@ export async function sendReviewCard(opts: ReviewCardOptions): Promise<void> {
         actions: [
           {
             tag: 'button',
-            text: { tag: 'plain_text', content: '✅ 确认替换' },
+            text: { tag: 'plain_text', content: '✅ 确认替换并提 PR' },
             type: 'primary',
             value: { action: 'approve_locator', proposalId: item.id, token: callbackToken },
           },
