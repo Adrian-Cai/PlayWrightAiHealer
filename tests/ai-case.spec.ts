@@ -5,6 +5,11 @@ import {
 } from '../utils/ai-healer';
 
 test('AI Case UI Test - Manual Confirmation', async ({ page }, testInfo) => {
+  test.skip(
+    !process.env.DEEPSEEK_API_KEY && !process.env.OPENAI_API_KEY,
+    'Live self-healing requires DEEPSEEK_API_KEY or OPENAI_API_KEY'
+  );
+
   // 1. Navigate to the project page
   await page.goto('https://ai-case.wiac.xyz/');
 

@@ -15,6 +15,16 @@
 
 ## 核心能力
 
+### 当前重构后的边界
+
+自愈核心现在拆成三层：
+
+* `utils/healer-core.ts`：只负责编排自愈主链路，包括缓存验证、页面状态抓取、AI 候选、质量门禁和最终动作重试；
+* `utils/ai-healer.ts`：提供 Playwright 动作入口，包含 `clickByKey`、`assertVisibleByKey`、`fillByKey`、`locateByKey`，并保留旧的 `aiClickByKey` 等兼容导出；
+* 飞书、审批回调、CNB PR、Jenkins 报告只作为外围集成，不参与核心自愈决策。
+
+默认模式是“运行时救场 + 生成人工审核 proposal”。自动创建 PR 默认关闭；需要时设置 `HEALER_AUTO_PR=true`。
+
 ### 1. AI 自愈点击
 
 当普通点击失败时，项目会调用 `aiClick` 方法进行自愈处理：
@@ -90,6 +100,8 @@ playwright-ai-healer
 │   └── fixtures/                # 测试夹具（如 broken-page.html）
 ├── utils/                       # 工具与核心能力封装
 │   ├── ai-healer.ts             # AI 自愈点击/断言封装
+│   ├── healer-core.ts           # 自愈核心编排（无飞书/CNB/Jenkins 依赖）
+│   ├── healer-config.ts         # 环境变量读取与功能开关
 │   ├── feishu-bot.ts            # 飞书机器人卡片通知封装
 │   ├── capture-state.ts         # 页面状态抓取
 │   ├── heal-cache.ts            # 自愈结果缓存
@@ -320,6 +332,15 @@ await expect(page.locator('text=批量确认')).toBeVisible();
 await aiClick(page, 'text=批量确认', '批量确认按钮');
 await aiAssert(page, 'text=批量确认', '批量确认按钮');
 ```
+
+推荐新用例优先使用集中 locator key：
+
+```ts
+await clickByKey(page, 'manualConfirmMenu', '人工确认菜单项', testInfo);
+await assertVisibleByKey(page, 'batchConfirmButton', '批量确认按钮', testInfo);
+```
+
+`assertVisibleByKey` 会在元素不存在、不可见或 `expectedText` 不匹配时触发自愈；`locateByKey` 默认要求原 locator 只匹配 1 个可见元素。
 
 当 `text=批量确认` 失效时，系统会自动尝试通过 AI 生成新的定位器，例如：
 

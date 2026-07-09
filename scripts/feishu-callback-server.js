@@ -174,14 +174,19 @@ const dispatcher = new lark.EventDispatcher({}).register({
     // a git branch + commit + push + CNB PR so the change goes through code
     // review. The PR URL is included in the reply message.
     let prUrl = '';
+    const autoPrEnabled = process.env.HEALER_AUTO_PR === 'true';
     if (outcome.ok && outcome.action === 'approve_locator' && originalProposal) {
-      console.log('[FeishuCallback] Phase 4: creating PR for approved locator...');
-      const prResult = await createHealPR(originalProposal);
-      if (prResult.ok) {
-        prUrl = prResult.prUrl || '';
-        console.log(`[FeishuCallback] PR created: ${prUrl} (branch: ${prResult.branch})`);
+      if (autoPrEnabled) {
+        console.log('[FeishuCallback] HEALER_AUTO_PR=true, creating PR for approved locator...');
+        const prResult = await createHealPR(originalProposal);
+        if (prResult.ok) {
+          prUrl = prResult.prUrl || '';
+          console.log(`[FeishuCallback] PR created: ${prUrl} (branch: ${prResult.branch})`);
+        } else {
+          console.error(`[FeishuCallback] PR creation failed: ${prResult.error}`);
+        }
       } else {
-        console.error(`[FeishuCallback] PR creation failed: ${prResult.error}`);
+        console.log('[FeishuCallback] HEALER_AUTO_PR is not true; PR creation skipped.');
       }
     }
 
@@ -197,8 +202,10 @@ const dispatcher = new lark.EventDispatcher({}).register({
           replyText = `✅ 已确认替换定位器 [${outcome.proposal.locatorKey}]\n${outcome.proposal.oldLocator} → ${outcome.proposal.newLocator}`;
           if (prUrl) {
             replyText += `\n\n🔗 PR: ${prUrl}`;
-          } else {
+          } else if (autoPrEnabled) {
             replyText += `\n\n⚠️ PR 创建失败，请手动提交 locator-store.json`;
+          } else {
+            replyText += `\n\nℹ️ 自动提 PR 未启用（设置 HEALER_AUTO_PR=true 可开启）`;
           }
         } else {
           replyText = `❌ 已拒绝修复建议 [${outcome.proposal.locatorKey}]`;

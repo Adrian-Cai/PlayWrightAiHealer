@@ -4,6 +4,8 @@
  */
 
 import { test, expect } from '@playwright/test';
+import * as os from 'os';
+import * as path from 'path';
 import { HealCache } from '../utils/heal-cache';
 import { HealEventBus } from '../utils/heal-event-bus';
 import { HealOutput } from '../skills/self-healing-locator/contract';
@@ -96,7 +98,8 @@ test.describe('HealEventBus', () => {
 
 test.describe('HealCache', () => {
   test('should store and retrieve cached outputs', async () => {
-    const cache = new HealCache(300000, ':memory:'); // Use 300s TTL, :memory: is symbolic
+    const cacheFile = path.join(os.tmpdir(), `heal-cache-${Date.now()}.json`);
+    const cache = new HealCache(300000, cacheFile); // Use 300s TTL and an isolated temp file
 
     const output: HealOutput = {
       locator: 'button:has-text("OK")',

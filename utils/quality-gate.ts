@@ -71,6 +71,17 @@ export async function validateHeal(
   }
 
   // 4. If action is 'click' or 'fill', verify element is clickable/fillable
+  if (input.action === 'click' || input.action === 'locate' || input.action === 'assert') {
+    try {
+      const isVisible = await page.locator(output.locator).first().isVisible();
+      if (!isVisible) {
+        errors.push('Target element is not visible');
+      }
+    } catch (visibleError) {
+      errors.push(`Failed to check element visibility: ${visibleError}`);
+    }
+  }
+
   if (input.action === 'click') {
     try {
       const isEnabled = await page.locator(output.locator).first().isEnabled();

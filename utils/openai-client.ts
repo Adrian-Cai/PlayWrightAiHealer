@@ -5,6 +5,7 @@
 
 import axios from 'axios';
 import { HealInput, HealOutput } from '../skills/self-healing-locator/contract';
+import { getEnv } from './healer-config';
 
 let mockHook: ((input: HealInput) => Promise<HealOutput>) | null = null;
 
@@ -27,8 +28,8 @@ export async function callAIForHeal(input: HealInput): Promise<HealOutput> {
     return mockHook(input);
   }
 
-  const deepseekKey = process.env.DEEPSEEK_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
+  const deepseekKey = getEnv('DEEPSEEK_API_KEY');
+  const openaiKey = getEnv('OPENAI_API_KEY');
 
   if (!deepseekKey && !openaiKey) {
     throw new Error(

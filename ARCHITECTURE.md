@@ -2,7 +2,15 @@
 
 ## System Overview
 
-This document describes the complete self-healing locator infrastructure implemented in `playwright-ai-healer`.
+This document describes the self-healing locator infrastructure implemented in `playwright-ai-healer`.
+
+The current design keeps the self-healing core thin:
+
+- `utils/healer-core.ts` owns the runtime heal flow: cache revalidation, state capture, AI proposal, quality gate validation, final retry, and event emission.
+- `utils/ai-healer.ts` owns Playwright action adapters and proposal recording. New tests should prefer `clickByKey`, `assertVisibleByKey`, `fillByKey`, and `locateByKey`.
+- Feishu, callback approval, CNB PR creation, and Jenkins reporting are integrations around the core. CNB PR creation is opt-in via `HEALER_AUTO_PR=true`.
+
+`HEAL_SUCCESS` is emitted only after the healed locator passes validation and the final Playwright action succeeds. Cached locators are revalidated before use.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
