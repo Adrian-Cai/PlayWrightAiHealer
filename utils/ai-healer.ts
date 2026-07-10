@@ -1,3 +1,18 @@
+/**
+ * AI Healer Adapter — Playwright 动作入口层。
+ *
+ * 本文件连接“测试用例”和“自愈核心”：
+ * - 对外提供 aiClick/aiAssert/aiFill/aiLocate 兼容旧入口；
+ * - 对外提供 clickByKey/assertVisibleByKey/fillByKey/locateByKey 推荐入口；
+ * - 原 Locator 失败后调用 healer-core.ts；
+ * - ByKey 入口在自愈成功或失败后记录 Proposal，供飞书审核卡片使用。
+ *
+ * 分层边界：
+ * - healer-core.ts 只负责自愈编排，不知道 locatorKey，也不写 Proposal；
+ * - ai-healer.ts 负责把测试语义、locatorKey、TestInfo 转换为 HealInput/Proposal；
+ * - 本文件不直接发送飞书消息，也不创建 PR。
+ */
+
 import { expect, Page, TestInfo } from '@playwright/test';
 import { HealEvent, HealInput } from '../skills/self-healing-locator/contract';
 import { healCache } from './heal-cache';
@@ -12,6 +27,12 @@ import { HealResult, healLocator } from './healer-core';
 
 export { HealResult, healCache, healEventBus };
 
+/**
+ * 调用自愈核心的内部适配函数。
+ *
+ * 这里把真实依赖注入给 healer-core：缓存、DOM 抓取、AI 客户端、Quality Gate 和事件发送。
+ * 这样 healer-core 不需要 import 任何具体外围实现，便于单测和分层维护。
+ */
 async function heal(
   page: Page,
   input: HealInput,
@@ -34,6 +55,11 @@ async function heal(
   );
 }
 
+/**
+ * 补齐事件上下文后发往事件总线。
+ *
+ * healer-core 只产生通用 HealEvent；这里补充 testName/Jenkins URL 等执行环境信息。
+ */
 async function emitEvent(
   page: Page,
   event: Omit<HealEvent, 'testName' | 'jenkinsUrl'>,
@@ -48,6 +74,7 @@ async function emitEvent(
   await healEventBus.emit(fullEvent);
 }
 
+/** 可见性断言辅助函数，支持可选 expectedText。 */
 async function expectVisibleLocator(
   page: Page,
   locator: string,
@@ -61,6 +88,10 @@ async function expectVisibleLocator(
   }
 }
 
+/**
+ * locate 动作要求 Locator 唯一且可见。
+ * 这比普通 first() 更严格，避免把多匹配 Locator 误认为可用。
+ */
 async function expectUniqueVisibleLocator(
   page: Page,
   locator: string,
@@ -78,12 +109,23 @@ function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * 自愈失败时保留两类错误：
+ * - 原始 Locator 为什么失败；
+ * - AI 自愈为什么失败。
+ * 这样排查时不会只看到 AI 错误而丢失最初失败现场。
+ */
 function throwWithHealContext(originError: unknown, healError: unknown): never {
   throw new Error(
     `${toErrorMessage(originError)}\n\nHeal failed: ${toErrorMessage(healError)}`
   );
 }
 
+/**
+ * 兼容旧入口：直接传 Locator。
+ *
+ * 新用例优先使用 clickByKey，因为 ByKey 才能记录 locatorKey 并进入人工审核闭环。
+ */
 export async function aiClick(
   page: Page,
   locator: string,
@@ -114,6 +156,7 @@ export async function aiClick(
   }
 }
 
+/** 兼容旧入口：直接传 Locator 做可见性/文本断言。 */
 export async function aiAssert(
   page: Page,
   locator: string,
@@ -146,6 +189,7 @@ export async function aiAssert(
   }
 }
 
+/** 兼容旧入口：直接传 Locator 执行 fill。 */
 export async function aiFill(
   page: Page,
   locator: string,
@@ -178,6 +222,7 @@ export async function aiFill(
   }
 }
 
+/** 兼容旧入口：返回一个唯一可见的 Locator 字符串。 */
 export async function aiLocate(
   page: Page,
   locator: string,
@@ -217,6 +262,12 @@ interface ProposalMeta {
   page: Page;
 }
 
+/**
+ * 将 ByKey 自愈结果写入 Proposal Store。
+ *
+ * 成功时写 pending proposal，等待飞书人工审核；失败时写 failed proposal，留下审计记录。
+ * 记录 Proposal 失败不应影响测试主错误抛出，因此这里只打 warning。
+ */
 function recordProposal(
   meta: ProposalMeta,
   oldLocator: string,
@@ -243,6 +294,11 @@ function recordProposal(
   }
 }
 
+/**
+ * 推荐入口：通过 locatorKey 执行 click。
+ *
+ * 流程：读取正式 Locator → 原动作失败 → AI 自愈重试 → 记录待审核 Proposal。
+ */
 export async function aiClickByKey(
   page: Page,
   locatorKey: string,
@@ -281,6 +337,7 @@ export async function aiClickByKey(
   }
 }
 
+/** 推荐入口：通过 locatorKey 执行可见性/文本断言。 */
 export async function aiAssertByKey(
   page: Page,
   locatorKey: string,
@@ -321,6 +378,7 @@ export async function aiAssertByKey(
   }
 }
 
+/** 推荐入口：通过 locatorKey 执行 fill。 */
 export async function aiFillByKey(
   page: Page,
   locatorKey: string,
@@ -361,6 +419,7 @@ export async function aiFillByKey(
   }
 }
 
+/** 推荐入口：通过 locatorKey 获取唯一可见 Locator。 */
 export async function aiLocateByKey(
   page: Page,
   locatorKey: string,
@@ -401,6 +460,7 @@ export async function aiLocateByKey(
   }
 }
 
+// 简短别名：新用例建议使用这些名字，旧的 aiXxxByKey 继续保留兼容。
 export const clickByKey = aiClickByKey;
 export const assertVisibleByKey = aiAssertByKey;
 export const fillByKey = aiFillByKey;
