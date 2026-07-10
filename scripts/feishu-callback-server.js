@@ -9,6 +9,7 @@
  * Prerequisites (Feishu app backend):
  *   - 事件与回调 → 事件配置 → 推送方式 = "使用长连接接收事件"
  *   - 事件与回调 → 卡片交互回调 → 同样长连接模式
+ *   - Link preview callback subscription includes url.preview.get
  *   - App has im:message + card permissions
  *
  * Env vars (already used by the test runner):
@@ -48,6 +49,10 @@ const {
   handleReviewCallback,
 } = require('../utils/healer-review-actions');
 const { createHealPR } = require('../utils/cnb-pr-creator');
+const {
+  buildJenkinsReportPreview,
+  extractUrlPreviewTarget,
+} = require('../utils/link-preview');
 
 /**
  * Build an updated card body that replaces the action buttons with a result
@@ -129,6 +134,17 @@ function withTimeout(promise, ms, label = 'operation') {
 // --- Long-connection setup ---
 
 const dispatcher = new lark.EventDispatcher({}).register({
+  'url.preview.get': async (event) => {
+    const url = extractUrlPreviewTarget(event);
+    const preview = buildJenkinsReportPreview(url);
+    if (preview.inline) {
+      console.log(`[FeishuCallback] Link preview generated for: ${url}`);
+    } else {
+      console.log(`[FeishuCallback] Link preview ignored for: ${url || '(missing url)'}`);
+    }
+    return preview;
+  },
+
   'card.action.trigger': async (event) => {
     // event shape: { messageId, chatId, operator, action: { value, tag, ... } }
     const rawValue = event?.action?.value;
