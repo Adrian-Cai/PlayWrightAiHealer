@@ -1,5 +1,5 @@
 {
-  "manualConfirmMenu": "li.ant-menu-item:has-text('人工确认')",
+  "manualConfirmMenu": "li.ant-menu-item:has-text('人工确认1')",
   "batchConfirmButton": "text=批量确认",
   "projectSearchInput": "input[placeholder=\"请输入项目名称\"]",
   "projectCreateButton": "text=新增项目"
