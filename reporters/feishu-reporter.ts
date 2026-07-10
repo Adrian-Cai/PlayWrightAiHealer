@@ -89,12 +89,22 @@ class FeishuReporter implements Reporter {
       ? `${normalizedBase}artifact/playwright-report/*zip*/playwright-report.zip`
       : '';
 
-    // If there are pending (AI-healed, awaiting review) proposals, send a
-    // review card instead of the plain summary. The review card lists each
-    // old→new locator so a human can decide. Phase 3 adds approve/reject
-    // buttons to this card.
+    // Every run sends a compact group summary. Pending proposals trigger an
+    // additional private review card for the configured locator owner.
     const proposals = readProposals();
     const pendingCount = proposals.filter((p) => p.status === 'pending').length;
+
+    await sendCaseSummaryNotification({
+      title,
+      status,
+      total: this.total,
+      passed: this.passed,
+      failed: this.failed,
+      skipped: this.skipped,
+    });
+    console.log(
+      `[FeishuReporter] Summary sent. total=${this.total} passed=${this.passed} failed=${this.failed} skipped=${this.skipped} | heal success=${healSuccessCount} failed=${healFailedCount}`
+    );
 
     if (pendingCount > 0) {
       await sendReviewCard({
@@ -110,25 +120,6 @@ class FeishuReporter implements Reporter {
       });
       console.log(
         `[FeishuReporter] Review card sent with ${pendingCount} pending proposal(s).`
-      );
-    } else {
-      await sendCaseSummaryNotification({
-        title,
-        status,
-        total: this.total,
-        passed: this.passed,
-        failed: this.failed,
-        skipped: this.skipped,
-        healTriggeredCount,
-        healSuccessCount,
-        healFailedCount,
-        failedCases: this.caseResults,
-        healEvents,
-        reportUrl,
-        reportArchiveUrl,
-      });
-      console.log(
-        `[FeishuReporter] Summary sent. total=${this.total} passed=${this.passed} failed=${this.failed} skipped=${this.skipped} | heal success=${healSuccessCount} failed=${healFailedCount}`
       );
     }
   }

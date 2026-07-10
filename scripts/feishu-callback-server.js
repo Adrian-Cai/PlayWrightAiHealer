@@ -189,7 +189,10 @@ const dispatcher = new lark.EventDispatcher({}).register({
     // After approveLocatorProposal updates locator-store.json on disk, create
     // a git branch + commit + push + CNB PR so the change goes through code
     // review. The PR URL is included in the reply message.
-    let prUrl = '';
+    // Card action callbacks have a short response deadline. Persist the
+    // review decision first, then do network-only feedback out of band.
+    void (async () => {
+      let prUrl = '';
     const autoPrEnabled = process.env.HEALER_AUTO_PR === 'true';
     if (outcome.ok && outcome.action === 'approve_locator' && originalProposal) {
       if (autoPrEnabled) {
@@ -269,7 +272,16 @@ const dispatcher = new lark.EventDispatcher({}).register({
       }
     }
 
-    return {};
+    })().catch((err) => {
+      console.error('[FeishuCallback] Background action feedback failed:', err?.message || err);
+    });
+
+    return {
+      toast: {
+        type: outcome.ok ? 'success' : 'error',
+        content: outcome.ok ? '审核操作已受理' : outcome.error,
+      },
+    };
   },
 });
 

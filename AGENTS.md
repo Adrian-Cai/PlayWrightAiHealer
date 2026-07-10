@@ -30,12 +30,14 @@
 | `OPENAI_API_KEY` | 否 | 兼容回退 |
 | `FEISHU_APP_ID` | 否 | 飞书自建应用 App ID |
 | `FEISHU_APP_SECRET` | 否 | 飞书 App Secret |
-| `FEISHU_CHAT_ID` | 否 | 接收卡片的群 chat_id |
+| `FEISHU_CHAT_ID` | 否 | 接收测试结果汇总卡的群 chat_id |
+| `FEISHU_REVIEWER_OPEN_ID` | 否 | 接收 Locator 审批卡的负责人 open_id（私聊） |
 | `HEALER_CALLBACK_TOKEN` | 否 | 卡片按钮回调的共享密钥兜底（长连接 SDK 已做签名校验，这是额外防线） |
 | `FEISHU_DOMAIN` | 否 | `lark`（国际版）；不设默认飞书国内 |
 | `JENKINS_BUILD_URL` | 否 | Jenkins 注入，飞书卡片带"查看 Jenkins"按钮 |
+| `FEISHU_SEND_HEAL_EVENTS` | 否 | 设为 `true` 才逐条发送自愈过程；默认只归档进测试报告 |
 
-缺飞书三项时不报错，只 console.log 跳过。`.env` 当前**不存在**，真机飞书验证需先创建。
+缺 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID` 时跳过群汇总；缺 `FEISHU_REVIEWER_OPEN_ID` 时跳过审批私聊，均只 console.log。`.env` 当前**不存在**，真机飞书验证需先创建。
 
 ## 代码结构
 
@@ -135,11 +137,12 @@ ByKey 内部：`getLocator(key)` → 尝试原 locator → 失败走 `heal()` �
 
 ## 飞书消息
 
-- 端点：`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id`
+- 端点：`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={chat_id|open_id}`
 - `tenant_access_token` 走 `auth/v3/tenant_access_token/internal`，模块内缓存（提前 300s 过期）。
 - 用 **interactive card**（不是 post）：`sendCard()` 统一封装，带重试 + 401 token 失效自动重取。
-- `sendReviewCard()`：审核卡片，每个 pending 提案带 [✅ 确认替换][❌ 拒绝] 按钮，`value` 含 `{action, proposalId, token}`。
-- `sendCaseSummaryNotification()`：无 pending 提案时的汇总卡片。
+- `sendCaseSummaryNotification()`：每轮测试都向 `FEISHU_CHAT_ID` 发送无操作按钮的简洁汇总卡。
+- `sendReviewCard()`：有 pending 提案时向 `FEISHU_REVIEWER_OPEN_ID` 私聊发送审核卡片，每个提案带 [✅ 确认替换][❌ 拒绝] 按钮，`value` 含 `{action, proposalId, token}`。
+- 自愈过程默认只写入 `test-results/ai-healer-events.jsonl` 测试报告产物，不推送飞书。
 - 卡片辅助函数：`field`/`divMd`/`hr`/`code`/`escapeMd`/`escapeMdInline`/`truncate`/`linkButton`。
 
 ## 测试 mock
