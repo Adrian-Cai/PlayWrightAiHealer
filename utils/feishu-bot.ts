@@ -13,6 +13,7 @@ dotenv.config();
 const APP_ID = process.env.FEISHU_APP_ID || '';
 const APP_SECRET = process.env.FEISHU_APP_SECRET || '';
 const REVIEW_CARD_TEMPLATE_ID = process.env.FEISHU_REVIEW_CARD_TEMPLATE_ID || '';
+const DEFAULT_CASE_SUMMARY_CARD_TEMPLATE_ID = 'AAqWfnE72DGps';
 
 let tenantAccessToken: string = '';
 let tokenExpiry: number = 0;
@@ -422,6 +423,12 @@ export interface CaseSummaryOptions {
   passed: number;
   failed: number;
   skipped: number;
+  healTriggeredCount?: number;
+  healSuccessCount?: number;
+  healFailedCount?: number;
+  pendingCount?: number;
+  reportUrl?: string;
+  reportArchiveUrl?: string;
 }
 
 export function buildCaseSummaryElements(opts: CaseSummaryOptions): any[] {
@@ -438,9 +445,101 @@ export function buildCaseSummaryElements(opts: CaseSummaryOptions): any[] {
   ];
 }
 
+function resolveCaseSummaryTemplateId(): string {
+  const configured =
+    process.env.FEISHU_SUMMARY_CARD_TEMPLATE_ID ??
+    process.env.FEISHU_CASE_SUMMARY_CARD_TEMPLATE_ID;
+  const value = configured ?? DEFAULT_CASE_SUMMARY_CARD_TEMPLATE_ID;
+  const normalized = value.trim().toLowerCase();
+
+  // 本地排查模板变量问题时可显式关闭模板，临时退回内置简版卡片。
+  if (['', 'false', 'off', 'none', 'legacy'].includes(normalized)) {
+    return '';
+  }
+
+  return value.trim();
+}
+
+function statusText(status: CaseSummaryOptions['status']): string {
+  if (status === 'success') return '通过';
+  if (status === 'error') return '存在失败';
+  return '存在警告';
+}
+
+export interface CaseSummaryTemplateVariables {
+  title: string;
+  summary_title: string;
+  status: string;
+  status_text: string;
+  total: string;
+  passed: string;
+  failed: string;
+  skipped: string;
+  test_total: string;
+  test_passed: string;
+  test_failed: string;
+  test_skipped: string;
+  heal_triggered: string;
+  heal_success: string;
+  heal_failed: string;
+  pending_count: string;
+  review_pending: string;
+  report_url: string;
+  report_archive_url: string;
+  generated_at: string;
+}
+
+/** Build variables for the Feishu test-result template card. */
+export function buildCaseSummaryTemplateVariables(opts: CaseSummaryOptions): CaseSummaryTemplateVariables {
+  const healTriggered = String(opts.healTriggeredCount ?? 0);
+  const healSuccess = String(opts.healSuccessCount ?? 0);
+  const healFailed = String(opts.healFailedCount ?? 0);
+  const pending = String(opts.pendingCount ?? 0);
+  const now = new Date().toISOString().replace('T', ' ').split('.')[0];
+
+  return {
+    title: opts.title,
+    summary_title: opts.title,
+    status: opts.status,
+    status_text: statusText(opts.status),
+    total: String(opts.total),
+    passed: String(opts.passed),
+    failed: String(opts.failed),
+    skipped: String(opts.skipped),
+    test_total: String(opts.total),
+    test_passed: String(opts.passed),
+    test_failed: String(opts.failed),
+    test_skipped: String(opts.skipped),
+    heal_triggered: healTriggered,
+    heal_success: healSuccess,
+    heal_failed: healFailed,
+    pending_count: pending,
+    review_pending: pending,
+    report_url: opts.reportUrl || '',
+    report_archive_url: opts.reportArchiveUrl || '',
+    generated_at: now,
+  };
+}
+
+export function buildCaseSummaryTemplateContent(
+  opts: CaseSummaryOptions,
+  templateId: string
+): Record<string, unknown> {
+  return {
+    type: 'template',
+    data: {
+      template_id: templateId,
+      template_variable: buildCaseSummaryTemplateVariables(opts),
+    },
+  };
+}
+
 /**
  * Send a single end-of-run summary card to Feishu.
- * Called by FeishuReporter.onEnd() in reporters/feishu-reporter.ts
+ * Called by FeishuReporter.onEnd() in reporters/feishu-reporter.ts.
+ *
+ * 默认使用飞书模板卡片 AAqWfnE72DGps，避免继续发送旧的四字段简版卡片。
+ * 如需本地排查，可设置 FEISHU_SUMMARY_CARD_TEMPLATE_ID=legacy 退回简版卡片。
  */
 export async function sendCaseSummaryNotification(opts: CaseSummaryOptions): Promise<void> {
   const recipient = resolveNotificationRecipient('test-summary');
@@ -449,8 +548,20 @@ export async function sendCaseSummaryNotification(opts: CaseSummaryOptions): Pro
     return;
   }
 
-  const elements = buildCaseSummaryElements(opts);
+  const templateId = resolveCaseSummaryTemplateId();
+  if (templateId) {
+    await sendCard(
+      opts.title,
+      opts.status,
+      [],
+      recipient,
+      { retries: 2 },
+      buildCaseSummaryTemplateContent(opts, templateId)
+    );
+    return;
+  }
 
+  const elements = buildCaseSummaryElements(opts);
   await sendCard(opts.title, opts.status, elements, recipient, { retries: 2 });
 }
 

@@ -89,8 +89,8 @@ class FeishuReporter implements Reporter {
       ? `${normalizedBase}artifact/playwright-report/*zip*/playwright-report.zip`
       : '';
 
-    // Every run sends a compact group summary. Pending proposals trigger an
-    // additional private review card for the configured locator owner.
+    // Every run sends a group summary. Pending proposals trigger an additional
+    // private review card for the configured locator owner.
     const proposals = readProposals();
     const pendingCount = proposals.filter((p) => p.status === 'pending').length;
 
@@ -101,6 +101,12 @@ class FeishuReporter implements Reporter {
       passed: this.passed,
       failed: this.failed,
       skipped: this.skipped,
+      healTriggeredCount,
+      healSuccessCount,
+      healFailedCount,
+      pendingCount,
+      reportUrl,
+      reportArchiveUrl,
     });
     console.log(
       `[FeishuReporter] Summary sent. total=${this.total} passed=${this.passed} failed=${this.failed} skipped=${this.skipped} | heal success=${healSuccessCount} failed=${healFailedCount}`
