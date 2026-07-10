@@ -12,6 +12,7 @@ dotenv.config();
 
 const APP_ID = process.env.FEISHU_APP_ID || '';
 const APP_SECRET = process.env.FEISHU_APP_SECRET || '';
+const REVIEW_CARD_TEMPLATE_ID = process.env.FEISHU_REVIEW_CARD_TEMPLATE_ID || '';
 
 let tenantAccessToken: string = '';
 let tokenExpiry: number = 0;
@@ -145,7 +146,8 @@ async function sendCard(
   status: Status,
   elements: any[],
   recipient: NotificationRecipient,
-  options: { rethrow?: boolean; retries?: number } = {}
+  options: { rethrow?: boolean; retries?: number } = {},
+  content?: unknown
 ): Promise<void> {
   const { rethrow = false, retries = 0 } = options;
 
@@ -164,7 +166,7 @@ async function sendCard(
   const payload = {
     receive_id: recipient.receiveId,
     msg_type: 'interactive',
-    content: JSON.stringify(card),
+    content: JSON.stringify(content ?? card),
   };
 
   const isRetryable = (error: any): boolean => {
@@ -433,7 +435,6 @@ export function buildCaseSummaryElements(opts: CaseSummaryOptions): any[] {
         field('跳过', String(opts.skipped)),
       ],
     },
-    noteMd('自愈过程已归档至测试报告。'),
   ];
 }
 
@@ -492,10 +493,101 @@ export interface ReviewCardOptions {
   reportArchiveUrl?: string;
 }
 
+export interface ReviewTemplateProposal {
+  index: number;
+  element_name: string;
+  test_name: string;
+  locator_key: string;
+  action: string;
+  old_locator: string;
+  new_locator: string;
+  confidence: string;
+  reason: string;
+  approve_value: { action: 'approve_locator'; proposalId: string; token: string };
+  reject_value: { action: 'reject_locator'; proposalId: string; token: string };
+}
+
+export interface ReviewTemplateVariables {
+  review_title: string;
+  review_summary: string;
+  proposal_items: ReviewTemplateProposal[];
+}
+
+/** Build the variables expected by the Feishu review-card template. */
+export function buildReviewTemplateVariables(
+  opts: ReviewCardOptions,
+  callbackToken = process.env.HEALER_CALLBACK_TOKEN || ''
+): ReviewTemplateVariables {
+  const pending = opts.proposals.filter(
+    (proposal) => proposal.status === 'pending' && proposal.newLocator
+  );
+
+  return {
+    review_title: opts.title,
+    review_summary:
+      `测试 ${opts.total} 项：通过 ${opts.passed}，失败 ${opts.failed}，跳过 ${opts.skipped}。` +
+      `待审核定位器 ${pending.length} 项。`,
+    proposal_items: pending.slice(0, 10).map((proposal, index) => {
+      const confidence =
+        typeof proposal.confidence === 'number' && proposal.confidence >= 0 && proposal.confidence <= 1
+          ? `${(proposal.confidence * 100).toFixed(0)}%`
+          : '-';
+
+      return {
+        index: index + 1,
+        element_name: proposal.elementName,
+        test_name: proposal.testName || '-',
+        locator_key: proposal.locatorKey,
+        action: proposal.action,
+        old_locator: proposal.oldLocator,
+        new_locator: proposal.newLocator || '-',
+        confidence,
+        reason: proposal.reason || '-',
+        approve_value: {
+          action: 'approve_locator',
+          proposalId: proposal.id,
+          token: callbackToken,
+        },
+        reject_value: {
+          action: 'reject_locator',
+          proposalId: proposal.id,
+          token: callbackToken,
+        },
+      };
+    }),
+  };
+}
+
+export function buildReviewTemplateContent(
+  opts: ReviewCardOptions,
+  templateId: string,
+  callbackToken = process.env.HEALER_CALLBACK_TOKEN || ''
+): Record<string, unknown> {
+  return {
+    type: 'template',
+    data: {
+      template_id: templateId,
+      template_variable: buildReviewTemplateVariables(opts, callbackToken),
+    },
+  };
+}
+
 export async function sendReviewCard(opts: ReviewCardOptions): Promise<void> {
   const recipient = resolveNotificationRecipient('locator-review');
   if (!APP_ID || !APP_SECRET || !recipient) {
     console.log(`[Feishu] Skipping review card (not configured): ${opts.title}`);
+    return;
+  }
+
+  if (REVIEW_CARD_TEMPLATE_ID) {
+    await sendCard(
+      opts.title,
+      opts.status,
+      [],
+      recipient,
+      { retries: 2 },
+      buildReviewTemplateContent(opts, REVIEW_CARD_TEMPLATE_ID)
+    );
     return;
   }
 

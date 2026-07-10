@@ -32,6 +32,7 @@
 | `FEISHU_APP_SECRET` | 否 | 飞书 App Secret |
 | `FEISHU_CHAT_ID` | 否 | 接收测试结果汇总卡的群 chat_id |
 | `FEISHU_REVIEWER_OPEN_ID` | 否 | 接收 Locator 审批卡的负责人 open_id（私聊） |
+| `FEISHU_REVIEW_CARD_TEMPLATE_ID` | 否 | Locator 审批飞书模板 ID；不设则使用代码内置卡片 |
 | `HEALER_CALLBACK_TOKEN` | 否 | 卡片按钮回调的共享密钥兜底（长连接 SDK 已做签名校验，这是额外防线） |
 | `FEISHU_DOMAIN` | 否 | `lark`（国际版）；不设默认飞书国内 |
 | `JENKINS_BUILD_URL` | 否 | Jenkins 注入，飞书卡片带"查看 Jenkins"按钮 |
@@ -108,7 +109,7 @@ playwright-ai-healer/
 4. `validateHeal()` Quality Gate：confidence≥0.6 + count==1 + 可见 + 文本匹配；**count≠1 直接 early return fail**（避免对不存在元素死等）
 5. 成功 → `healCache.set()` + emit `HEAL_SUCCESS`；失败 → emit `HEAL_FAILED` + 抛错
 
-事件经 `healEventBus` 分发到 `healer-collector`（写 JSONL）和 `feishu-bot`（发卡片）。
+事件经 `healEventBus` 分发到 `healer-collector`（写 JSONL）；仅当 `FEISHU_SEND_HEAL_EVENTS=true` 时才由 `feishu-bot` 逐条发卡片。
 
 ### ByKey 包装（Phase 1-2，推荐用法）
 
