@@ -1,181 +1,350 @@
 # AGENTS.md
 
-> Playwright + AI 自愈定位器 + 人工审核闭环。Agent 必读：本文档只记"读代码读不出来"的硬约束。
-> 最后更新：2026-06-18（Phase 1-3 已提交，commit bb77db7）
+> Playwright + AI 自愈定位器 + 人工审核闭环。Agent 必读：本文只记录影响代码修改、测试验证和交付边界的硬约束。
+> 最后更新：2026-07-10，按当前 `codex/healer-core-refactor` 分支代码整理。
 
 ## 项目一句话
 
-基于 Playwright + DeepSeek 的 UI 自动化自愈演示。目标站点：`https://ai-case.wiac.xyz/`（Antd 5 风格）。定位器失效时调用 AI 生成候选 locator → 测试结束后飞书发"待审核"卡片 → 人工点"确认替换" → 只改 `locator-store.json`，AI 永远不碰测试代码。
+`playwright-ai-healer` 是一个 Playwright UI 自动化自愈实验项目。目标是：当原始元素定位器失效时，运行时抓取页面状态，调用 AI 生成候选 Locator，通过质量门禁验证后临时重试动作；测试结束后生成待审核 Proposal，由人工在飞书中批准或拒绝，批准后只沉淀到 `locator-store.json`，必要时再创建 CNB PR。
 
-## 关键命令
+核心边界：AI 只负责“候选定位器”和“运行时救场”，不能直接修改测试代码，也不能绕过人工审核把 Locator 永久写入正式资产。
+
+## 当前架构分层
+
+```text
+tests/*.spec.ts
+  → utils/ai-healer.ts              # Playwright 动作入口：click/assert/fill/locate
+  → utils/healer-core.ts            # 自愈核心编排：缓存、页面状态、AI、质量门禁、重试
+  → utils/*                         # 缓存、DOM 抓取、AI 客户端、质量门禁、事件、Proposal
+  → reporters/feishu-reporter.ts    # 运行结束汇总测试结果与待审核 Proposal
+  → scripts/feishu-callback-server.js
+  → utils/healer-review-actions.ts  # 人工审核 approve/reject
+  → locator-store.json              # 正式 Locator 单一事实源
+  → utils/cnb-pr-creator.ts         # 可选：批准后创建 CNB PR
+```
+
+三层边界必须保持清晰：
+
+1. `utils/healer-core.ts` 只做自愈主链路编排，不引入飞书、Jenkins、CNB、Reporter 等外围依赖。
+2. `utils/ai-healer.ts` 是 Playwright 动作适配层，负责 `clickByKey`、`assertVisibleByKey`、`fillByKey`、`locateByKey` 以及旧导出的兼容入口。
+3. 飞书通知、审批回调、CNB PR、Jenkins 报告都属于外围集成，不能参与核心自愈决策。
+
+## 常用命令
 
 | 场景 | 命令 |
 |---|---|
-| 安装依赖 | `npm ci`（CI） 或 `npm install`（本地） |
-| 安装浏览器 | `npx playwright install chromium` |
-| 跑测试 | `npx playwright test` ✅ `package.json` 的 `test` script 已是 `playwright test` |
-| 单 spec 跑 | `npx playwright test tests/locator-store.spec.ts` |
-| 有头调试 | `npx playwright test --headed` / `--debug` |
-| 查看报告 | `npx playwright show-report` |
-| 启动飞书回调服务 | `npm run feishu:callback`（长连接模式，需飞书凭据） |
-| 本地模拟审核 | `npx tsx scripts/simulate-callback.ts list` / `approve <id>` / `reject <id>` |
+| 安装依赖 | `npm ci`（CI 推荐）或 `npm install`（本地） |
+| 安装 Chromium | `npx playwright install chromium` |
+| 跑全部测试 | `npm run test` 或 `npx playwright test` |
+| CI 测试 | `npm run test:ci` |
+| Chromium 项目 | `npm run test:chromium` |
+| 有头运行 | `npm run test:headed` |
+| 调试模式 | `npm run test:debug` |
+| 查看 HTML 报告 | `npm run test:report` |
+| 启动飞书回调服务 | `npm run feishu:callback` |
 
-## 运行时环境变量
+当前 `package.json` 使用 CommonJS：`"type": "commonjs"`。TypeScript 由 Playwright/tsx 路径处理；不要因为个人习惯引入新的模块系统改造。
 
-放仓库根 `.env`（已在 `.gitignore`，**不要提交**）：
+## 环境变量
+
+本地放在仓库根目录 `.env`，不要提交。
 
 | 变量 | 必需 | 用途 |
-|---|---|---|
-| `DEEPSEEK_API_KEY` | 是 | AI 生成候选定位器（`baseURL=https://api.deepseek.com`，模型 `deepseek-chat`） |
-| `OPENAI_API_KEY` | 否 | 兼容回退 |
-| `FEISHU_APP_ID` | 否 | 飞书自建应用 App ID |
-| `FEISHU_APP_SECRET` | 否 | 飞书 App Secret |
-| `FEISHU_CHAT_ID` | 否 | 接收测试结果汇总卡的群 chat_id |
-| `FEISHU_REVIEWER_OPEN_ID` | 否 | 接收 Locator 审批卡的负责人 open_id（私聊） |
-| `FEISHU_REVIEW_CARD_TEMPLATE_ID` | 否 | Locator 审批飞书模板 ID；不设则使用代码内置卡片 |
-| `HEALER_CALLBACK_TOKEN` | 否 | 卡片按钮回调的共享密钥兜底（长连接 SDK 已做签名校验，这是额外防线） |
-| `FEISHU_DOMAIN` | 否 | `lark`（国际版）；不设默认飞书国内 |
-| `JENKINS_BUILD_URL` | 否 | Jenkins 注入，飞书卡片带"查看 Jenkins"按钮 |
-| `FEISHU_SEND_HEAL_EVENTS` | 否 | 设为 `true` 才逐条发送自愈过程；默认只归档进测试报告 |
+|---|---:|---|
+| `DEEPSEEK_API_KEY` | AI 自愈需要 | 优先使用 DeepSeek 生成候选 Locator |
+| `OPENAI_API_KEY` | 否 | DeepSeek 未配置时的兼容回退 |
+| `FEISHU_APP_ID` | 飞书需要 | 飞书自建应用 App ID |
+| `FEISHU_APP_SECRET` | 飞书需要 | 飞书自建应用 Secret |
+| `FEISHU_CHAT_ID` | 否 | 测试汇总卡片发送到群聊 |
+| `FEISHU_REVIEWER_OPEN_ID` | 否 | 待审核 Locator 卡片私聊接收人 |
+| `FEISHU_REVIEW_CARD_TEMPLATE_ID` | 否 | 飞书审核卡模板 ID；不配置则使用内置卡片 |
+| `FEISHU_SEND_HEAL_EVENTS` | 否 | 设为 `true` 才逐条推送自愈事件；默认只写 JSONL |
+| `HEALER_CALLBACK_TOKEN` | 否 | 飞书按钮回调共享密钥，作为 SDK 签名校验之外的额外防线 |
+| `FEISHU_DOMAIN` | 否 | `lark` 表示国际版；默认国内飞书 |
+| `RUN_ID` | 否 | 写入 Proposal，用于跨系统关联一次运行 |
+| `JENKINS_BUILD_URL` | 否 | 写入自愈事件上下文 |
+| `BUILD_URL` / `JENKINS_PUBLIC_URL` | 否 | Reporter 拼接 Jenkins 报告链接 |
+| `PLAYWRIGHT_REPORT_URL` | 否 | 显式指定 Playwright 报告链接，优先级最高 |
+| `LOCATOR_STORE_PATH` | 否 | 覆盖 `locator-store.json` 路径，测试或本地隔离时使用 |
+| `HEALER_PROPOSAL_PATH` | 否 | 覆盖 `test-results/healer-proposals.json` 路径 |
+| `HEALER_AUTO_PR` | 否 | 设为 `true` 后，人工批准时自动创建 CNB PR |
+| `CNB_TOKEN` | `HEALER_AUTO_PR=true` 时必需 | 调用 CNB API 创建 Pull Request |
 
-缺 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID` 时跳过群汇总；缺 `FEISHU_REVIEWER_OPEN_ID` 时跳过审批私聊，均只 console.log。`.env` 当前**不存在**，真机飞书验证需先创建。
+缺少飞书相关变量时，应降级为 console 日志或跳过飞书发送，不应影响本地测试主流程。缺少 AI Key 时，真实自愈调用会失败；单测应使用 mock。
 
-## 代码结构
+## 关键文件职责
 
+```text
+locator-store.json
+  正式 Locator 单一事实源。测试用例通过 key 引用，不要在新用例里散落硬编码 locator。
+
+utils/locator-repository.ts
+  getLocator/updateLocator/listLocatorKeys。updateLocator 只能更新已存在 key，避免回调服务偷偷引入新 key。
+
+utils/ai-healer.ts
+  Playwright 动作入口。先执行原 Locator，失败后调用 healLocator；ByKey 成功/失败都会记录 Proposal。
+
+utils/healer-core.ts
+  自愈核心编排。负责事件 ID、缓存命中、页面状态抓取、AI 候选、质量门禁、最终动作重试和事件发布。
+
+utils/capture-state.ts
+  从当前页面抓取 ARIA 元素、可见交互元素、简化 DOM 树、可见错误信息，控制元素数量避免 token 膨胀。
+
+utils/openai-client.ts
+  AI 客户端。优先 DeepSeek，回退 OpenAI；JSON mode；提供 setMockOpenAIClient 用于测试。
+
+utils/quality-gate.ts
+  AI 候选校验。包含 confidence 阈值、唯一性、可见性、文本一致性、enabled/editable 等动作相关检查。
+
+utils/heal-cache.ts
+  自愈结果缓存。globalSetup 会清空，防止跨运行缓存绕过人工审核；运行内可以减少重复 AI 调用。
+
+utils/heal-event-bus.ts
+  自愈事件总线。核心只发布事件，不直接关心消费者。
+
+utils/healer-collector.ts
+  订阅事件总线，写入 `test-results/ai-healer-events.jsonl`。
+
+utils/healer-proposal-store.ts
+  写入待审核 Proposal。pending 表示 AI 自愈成功待审核，failed 表示自愈失败留痕。
+
+utils/healer-review-actions.ts
+  审批纯逻辑。校验 token，approve 时更新 `locator-store.json`，reject 只改 Proposal 状态。
+
+scripts/feishu-callback-server.js
+  飞书长连接回调服务。接收卡片按钮动作，调用审核逻辑，必要时触发 CNB PR 创建。
+
+utils/cnb-pr-creator.ts
+  Phase 4 外围集成。批准后创建分支、提交 `locator-store.json`、推送并创建 CNB PR。默认不启用。
+
+reporters/feishu-reporter.ts
+  Playwright Reporter。onEnd 聚合测试结果、自愈事件和 Proposal，发送测试汇总卡与审核卡。
+
+playwright.global-setup.ts
+  每次运行前清空 JSONL、Proposal、缓存，并初始化事件采集器与飞书订阅。
+
+playwright.config.ts
+  Playwright 配置。不要随意改并发、Reporter、globalSetup/globalTeardown。
 ```
-playwright-ai-healer/
-├── locator-store.json              # 定位器唯一真相源（key→locator），提交进 git
-├── utils/
-│   ├── ai-healer.ts                # 核心：heal() + aiClick/aiAssert/aiFill/aiLocate + ByKey 版本
-│   ├── locator-repository.ts       # getLocator/updateLocator（读写 locator-store.json）
-│   ├── healer-proposal-store.ts    # 提案 CRUD + 去重 + 幂等状态流转
-│   ├── healer-review-actions.ts    # 纯函数审批逻辑（approve/reject/token校验）
-│   ├── heal-event-bus.ts           # 事件总线（pub/sub）
-│   ├── heal-cache.ts               # 运行内缓存（globalSetup 清空，防跨运行绕过审核）
-│   ├── healer-collector.ts         # JSONL 事件收集器
-│   ├── quality-gate.ts             # AI 候选校验（confidence/唯一性/可见性）
-│   ├── openai-client.ts            # DeepSeek/OpenAI 调用 + setMockOpenAIClient 钩子
-│   ├── capture-state.ts            # DOM 快照采集
-│   └── feishu-bot.ts               # 飞书卡片发送（sendCard/sendReviewCard/sendCaseSummaryNotification）
-├── reporters/
-│   └── feishu-reporter.ts          # Playwright reporter，onEnd 发审核/汇总卡片
-├── scripts/
-│   ├── feishu-callback-server.js   # 飞书长连接回调服务（WSClient + cardAction）
-│   └── simulate-callback.ts        # 本地模拟审核（无需飞书凭据）
-├── tests/
-│   ├── ai-case.spec.ts             # E2E（用 ByKey）
-│   ├── healer.spec.ts              # 6 组件单测
-│   ├── healer-integration.spec.ts  # 集成测试（RUN_INTEGRATION=1 守门）
-│   ├── locator-store.spec.ts       # locator-repository 单测（8）
-│   ├── healer-proposal.spec.ts     # 提案存储单测（11）
-│   ├── healer-bykey-proposal.spec.ts # ByKey+提案集成（4）
-│   └── healer-review-actions.spec.ts # 审批逻辑单测（19）
-├── skills/self-healing-locator/
-│   ├── contract.ts                 # HealInput/HealOutput/HealEvent 等类型
-│   └── SKILL.md
-├── playwright.config.ts            # chromium / fullyParallel:false / 3 reporter / globalSetup+Teardown
-├── playwright.global-setup.ts      # 清 JSONL + 清提案 + 清缓存 + init 订阅
-├── playwright.global-teardown.ts   # 日志缓存统计
-├── docs/superpowers/
-│   ├── specs/2026-06-16-...-design.md       # 6 组件 Skill 设计 spec
-│   ├── plans/2026-06-16-...-impl.md          # 6 组件实现计划（已完成）
-│   └── plans/2026-06-17-locator-review-system-impl.md  # 人工审核闭环计划（Phase 1-3 已完成）
-└── package.json                    # commonjs / tsx(dev) / @larksuiteoapi/node-sdk(dep)
+
+## 运行时自愈流程
+
+```text
+1. 测试用例调用 clickByKey/assertVisibleByKey/fillByKey/locateByKey
+2. ai-healer.ts 通过 locatorKey 从 locator-store.json 读取原 Locator
+3. 先执行原 Locator
+4. 原 Locator 失败后进入 healer-core.ts
+5. 查询运行内缓存
+6. 缓存未命中或缓存校验失败时，capturePageState 抓取页面状态
+7. callAIForHeal 生成候选 Locator
+8. validateHeal 执行质量门禁
+9. 校验通过后使用候选 Locator 重试原动作
+10. 重试成功后写运行内缓存、发布 HEAL_SUCCESS、记录 pending Proposal
+11. Reporter 在 onEnd 读取事件与 Proposal，发送飞书汇总/审核卡
+12. 人工 approve 后更新 locator-store.json；reject 只更新 Proposal 状态
+13. HEALER_AUTO_PR=true 时，approve 后可创建 CNB PR
 ```
 
-## 模块系统 & 语言
+失败处理约定：
 
-- `package.json` `"type": "commonjs"` —— `import` 用 ESM 语法（TS/Playwright 编译），运行时 CJS；新 `.ts` 不要写 `import.meta`。
-- 没有 `tsconfig.json`：TS 由 Playwright 内置编译器处理。`tsx` 仅用于 `scripts/` 下的独立脚本（回调服务、模拟工具）。
-- 没有 ESLint / Prettier —— 只靠 `npx playwright test` 验证。
-- `feishu-bot.ts` 有 3 个 pre-existing `process` lint 报错（无 @types/node），运行时正常，**不要管**。
+- AI 生成的候选 Locator 没通过质量门禁时，必须抛错并记录失败事件。
+- ByKey 自愈失败时，`recordProposal(..., null, errorDetail)` 应记录 failed Proposal，便于后续审计。
+- `throwWithHealContext` 应保留原始 Locator 失败信息和自愈失败信息，不能只抛 AI 错误。
 
-## Playwright 配置（`playwright.config.ts`）
+## Quality Gate 规则
 
-- `testDir: ./tests`，1 个 project：`chromium`。
-- `fullyParallel: false`（非 true！避免并发写 healer-proposals.json 竞态）。
-- `retries: CI ? 2 : 0`，`workers: CI ? 1 : undefined`。
-- `reporter: [['list'], ['html'], ['./reporters/feishu-reporter.ts']]`（3 个 reporter）。
-- `globalSetup` / `globalTeardown` 已接。
-- `timeout: 30000`（给 AI 调用留时间）。
+修改 `utils/quality-gate.ts` 时必须保持以下底线：
 
-## AI 自愈执行流
+- `confidence < 0.6` 视为失败。
+- 候选 Locator 必须匹配且只匹配 1 个元素。
+- 匹配 0 个或多个时应尽早返回失败，避免后续可见性/文本检查悬挂。
+- `assert` 携带 `expectedText` 时必须校验文本包含关系。
+- `click`、`locate`、`assert` 至少要校验可见性。
+- `click` 必须校验 enabled。
+- `fill` 必须校验 editable。
 
-### 6 组件管线（`heal()` in `ai-healer.ts`）
+不要为了让测试“看起来通过”而降低这些门槛。
 
-1. `healCache.get()` 查运行内缓存 → 命中直接返回
-2. `capturePageState()` 抓 DOM 快照（ARIA + 可见元素 + 文档树）
-3. `callAIForHeal()` 调 DeepSeek/OpenAI（JSON mode，返回 `{locator, strategy, confidence, reason}`）
-4. `validateHeal()` Quality Gate：confidence≥0.6 + count==1 + 可见 + 文本匹配；**count≠1 直接 early return fail**（避免对不存在元素死等）
-5. 成功 → `healCache.set()` + emit `HEAL_SUCCESS`；失败 → emit `HEAL_FAILED` + 抛错
+## Locator 维护规则
 
-事件经 `healEventBus` 分发到 `healer-collector`（写 JSONL）；仅当 `FEISHU_SEND_HEAL_EVENTS=true` 时才由 `feishu-bot` 逐条发卡片。
-
-### ByKey 包装（Phase 1-2，推荐用法）
+推荐写法：
 
 ```ts
-// spec 里用 key，不写死 locator
-await aiClickByKey(page, 'manualConfirmMenu', '人工确认菜单项', testInfo);
-await aiAssertByKey(page, 'batchConfirmButton', '批量确认按钮', testInfo);
+await clickByKey(page, 'manualConfirmMenu', '人工确认菜单项', testInfo);
+await assertVisibleByKey(page, 'batchConfirmButton', '批量确认按钮', testInfo);
 ```
 
-ByKey 内部：`getLocator(key)` → 尝试原 locator → 失败走 `heal()` → 成功 `addProposal({status:'pending'})` → 失败 `addProposal({status:'failed'})` + 抛原始 locator 错误。
+兼容旧写法仍可存在，但新用例优先使用 key：
 
-### 人工审核闭环（Phase 1-3）
-
-```
-原 locator 失败 → AI 生成候选 → Quality Gate 验证 → 验证通过写 pending 提案
-→ 所有 case 跑完 → reporter 读提案 → 飞书发"待审核"卡片（带 [确认替换][拒绝] 按钮）
-→ 用户点按钮 → 长连接回调服务 → approve 改 locator-store.json / reject 只改状态
-→ 下次跑测试用新 locator
+```ts
+await aiClick(page, 'text=批量确认', '批量确认按钮', testInfo);
+await aiAssert(page, 'text=批量确认', '批量确认按钮', testInfo);
 ```
 
-**关键设计决策**：
-- `globalSetup` 里 `healCache.clear()` —— 跨运行缓存清空，防 AI locator 绕过审核；运行内仍去重。
-- 提案按 `locatorKey+oldLocator+newLocator` 去重，多 case 同 key 只产 1 条。
-- `locator-store.json` 是定位器唯一真相源，提交进 git；`healer-proposals.json` 在 `test-results/`（gitignored）。
-- 飞书用长连接模式（`@larksuiteoapi/node-sdk` 的 `WSClient`），无需公网 URL；签名校验 SDK 内置。
+规则：
 
-## 飞书消息
+- 新增稳定业务元素时，优先把 Locator 加到 `locator-store.json`，再在 spec 中引用 key。
+- `locator-store.json` 是正式资产，应提交进 git。
+- `test-results/healer-proposals.json` 是运行产物，不应提交。
+- AI 候选 Locator 只能作为 Proposal，人工确认后才可沉淀。
+- 对关键业务流程，优先推动前端补 `data-testid`，不要依赖脆弱 class、动态 id 或深层 XPath。
 
-- 端点：`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={chat_id|open_id}`
-- `tenant_access_token` 走 `auth/v3/tenant_access_token/internal`，模块内缓存（提前 300s 过期）。
-- 用 **interactive card**（不是 post）：`sendCard()` 统一封装，带重试 + 401 token 失效自动重取。
-- `sendCaseSummaryNotification()`：每轮测试都向 `FEISHU_CHAT_ID` 发送无操作按钮的简洁汇总卡。
-- `sendReviewCard()`：有 pending 提案时向 `FEISHU_REVIEWER_OPEN_ID` 私聊发送审核卡片，每个提案带 [✅ 确认替换][❌ 拒绝] 按钮，`value` 含 `{action, proposalId, token}`。
-- 自愈过程默认只写入 `test-results/ai-healer-events.jsonl` 测试报告产物，不推送飞书。
-- 卡片辅助函数：`field`/`divMd`/`hr`/`code`/`escapeMd`/`escapeMdInline`/`truncate`/`linkButton`。
+## 飞书审核闭环
 
-## 测试 mock
+审核链路：
 
-- `setMockOpenAIClient(fn)` 注入 mock AI（编程式，**不读** `HEALER_MOCK_RESPONSE` 环境变量）。
-- 集成测试用 `RUN_INTEGRATION=1` 守门。
-- `aiAssert`/`aiAssertByKey` 的自愈触发依赖 `isVisible()` 抛错，但 Playwright 的 `isVisible()` 元素不存在时返回 `false` 不抛——assert 路径自愈仅在 strict-mode 违例等场景触发。这是 pre-existing 限制。
+```text
+Reporter 发现 pending Proposal
+  → sendReviewCard 私聊审核人
+  → 审核人点击确认/拒绝
+  → feishu-callback-server.js 接收 card.action.trigger
+  → parseCallbackValue + handleReviewCallback
+  → approveLocatorProposal / rejectLocatorProposal
+  → approve 更新 locator-store.json，reject 不改 locator-store.json
+  → HEALER_AUTO_PR=true 时 createHealPR
+```
 
-## 已知问题
+注意：
 
-- `tests/healer.spec.ts` 的 `new HealCache(300000, ':memory:')` 会把 `:memory:` 当文件名落盘，产生一个名为 `:memory:` 的文件（已 .gitignore 忽略不了因为不是标准名）。跑完测试后手动删 `rm -- :memory:`。
-- `feishu-bot.ts` 有 3 个 pre-existing `process` lint 报错（无 @types/node），运行时正常。
+- 飞书回调使用长连接模式，无需公网 HTTP 回调地址。
+- 卡片按钮 value 中包含 `{ action, proposalId, token }`。
+- `HEALER_CALLBACK_TOKEN` 未配置时依赖 SDK 签名校验；生产验证建议配置。
+- 回调服务会先持久化审核结果，再异步处理回复消息和 PR 创建，避免卡片回调超时。
+- PATCH 卡片刷新可能不稳定，所以代码会额外发回复消息作为可靠反馈。
 
-## 当前状态（2026-06-18）
+## CNB PR 创建规则
 
-- **Phase 1-3 已完成并提交**（commit bb77db7，20 files, +2786/-57）。
-- **全量测试：50 passed, 9 skipped, 0 failed**（9 skipped = `RUN_INTEGRATION` gated 集成测试 7 + `test.fixme` 2）。
-- 6 组件架构 100% 实现（非 AGENTS.md 旧版说的 60%）。
-- 旧的"坏状态"（ai-healer.ts 被替换成 feishu-bot 副本）**已修复**。
-- 工作区干净，未推送到远程。
+`HEALER_AUTO_PR` 默认不是 `true`，所以自动 PR 默认关闭。
 
-### 待办（优先级降序）
+开启条件：
 
-1. **真机飞书验证**：配 `.env`（FEISHU_APP_ID/SECRET/CHAT_ID + DEEPSEEK_API_KEY）→ 改坏 locator → 跑测试 → 启 `npm run feishu:callback` → 飞书点按钮验证。
-2. **Phase 4（可选）**：approve 后自动 git 建分支 + 推 CNB + 创 PR。计划见 `docs/superpowers/plans/2026-06-17-locator-review-system-impl.md` §5 Phase 4。
-3. **推送到远程**：`git push origin main`（远程 `https://cnb.cool/ImAcaiy/playwright-ai-healer.git`）。
+```env
+HEALER_AUTO_PR=true
+CNB_TOKEN=...
+```
+
+行为：
+
+```text
+approveLocatorProposal 已更新 locator-store.json
+  → createHealPR
+  → git checkout -b ai-heal/{locatorKey}-{timestamp}
+  → git add locator-store.json
+  → git commit
+  → git push origin HEAD
+  → POST CNB Pull Request API
+  → checkout 回原分支
+```
+
+约束：
+
+- 只提交 `locator-store.json`。
+- PR body 要包含 old/new locator、置信度、原因、测试用例、页面。
+- 创建 PR 失败不能回滚人工审核状态，但要在飞书回复中提示手动提交。
+- 不要把自动 PR 逻辑塞进 `healer-core.ts`。
+
+## Playwright 配置约束
+
+当前配置要点：
+
+- `testDir: './tests'`
+- `fullyParallel: false`
+- CI 下 `retries: 2`、`workers: 1`
+- Reporter：`list`、`html`、`./reporters/feishu-reporter.ts`
+- `globalSetup` 和 `globalTeardown` 已接入
+- 单测超时 30 秒
+- 失败截图：`only-on-failure`
+- Trace：`on-first-retry`
+- 项目：`chromium`
+
+不要把 `fullyParallel` 改成 `true`。当前存在 JSONL、Proposal、缓存等文件写入，随意并发会引入竞态。
+
+## 测试策略
+
+普通改动至少跑：
+
+```bash
+npm run test
+```
+
+涉及浏览器安装问题时：
+
+```bash
+npx playwright install chromium
+npm run test:chromium
+```
+
+涉及飞书回调时：
+
+```bash
+npm run feishu:callback
+```
+
+涉及真实 AI 调用时，需要 `.env` 中至少配置 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`。
+
+涉及 PR 创建时，需要本地/CI 环境满足：
+
+- 当前目录是 git 仓库；
+- origin 指向 CNB 仓库；
+- `CNB_TOKEN` 可用；
+- `HEALER_AUTO_PR=true`。
+
+如果本环境不能运行测试，提交说明里必须明确写“未运行测试”以及原因。
+
+## Mock 与集成测试
+
+- 单测优先使用 `setMockOpenAIClient(fn)`，不要在单测里真实调用 AI。
+- 不要引入 `HEALER_MOCK_RESPONSE` 这类隐藏环境变量来绕过代码路径。
+- 集成测试如有外部依赖，应使用显式守门变量，例如 `RUN_INTEGRATION=1`。
+- 测试文件应尽量使用临时 `LOCATOR_STORE_PATH` / `HEALER_PROPOSAL_PATH`，避免污染正式文件。
+
+## 文档维护规则
+
+当修改以下内容时，同步检查 README 与本文档：
+
+- 自愈主流程；
+- Locator Store 结构；
+- Proposal 状态机；
+- 飞书环境变量；
+- CNB PR 创建条件；
+- Playwright 配置；
+- 测试命令。
+
+不要在 AGENTS.md 中写会快速过期的“当前测试通过数量”，除非同一个提交刚刚实际运行并记录了命令。
 
 ## 不要做的事
 
-- 不要把 `.env` 提交进去（已在 `.gitignore`）。
-- 不要在 `utils/ai-healer.ts` 和 `utils/feishu-bot.ts` 同时实现飞书逻辑。
-- 不要加 `tsconfig.json` / ESLint / Prettier。
-- 不要把 AI 生成的 locator 直接写回 spec —— 通过 `locator-store.json` + 人工审核闭环沉淀。
-- 不要改 `fullyParallel` 为 `true`（并发写提案竞态）。
-- 不要按 `docs/superpowers/specs/2026-06-16-...-design.md` 重写 `ai-healer.ts`——6 组件已全部实现，spec 是历史记录。
+- 不要提交 `.env`、token、App Secret、Chat ID、Open ID、AI Key。
+- 不要让 AI 自动改 spec 中的 Locator。
+- 不要绕过人工审核直接更新 `locator-store.json`。
+- 不要把飞书、Jenkins、CNB、Reporter 逻辑放进 `utils/healer-core.ts`。
+- 不要把 `fullyParallel` 改成 `true`。
+- 不要为了通过测试降低 Quality Gate 阈值或删除唯一性校验。
+- 不要新增全局文件写入而不考虑并发和 globalSetup 清理。
+- 不要把 `test-results/` 运行产物提交进仓库。
+- 不要无目的引入 tsconfig、ESLint、Prettier 或模块系统大改。
+- 不要把历史 `docs/superpowers/specs/*` 当成当前实现强行重写代码；以当前源码为准。
+
+## Agent 修改代码时的默认交付格式
+
+提交或 PR 描述建议包含：
+
+```text
+Summary
+- 改了什么
+- 为什么改
+- 影响哪些链路
+
+Validation
+- [ ] npm run test
+- [ ] npm run test:chromium
+- [ ] npm run feishu:callback（如涉及飞书）
+- [ ] 手工验证审批卡 approve/reject（如涉及审核）
+
+Risk
+- Locator 持久化风险
+- 文件写入/并发风险
+- 外部凭据/网络依赖风险
+```
+
+如果只改文档，Validation 可以写“未运行测试：仅文档更新”。
