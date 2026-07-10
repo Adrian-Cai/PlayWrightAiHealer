@@ -12,12 +12,42 @@ dotenv.config();
 
 const APP_ID = process.env.FEISHU_APP_ID || '';
 const APP_SECRET = process.env.FEISHU_APP_SECRET || '';
-const CHAT_ID = process.env.FEISHU_CHAT_ID || '';
+const REVIEW_CARD_TEMPLATE_ID = process.env.FEISHU_REVIEW_CARD_TEMPLATE_ID || '';
 
 let tenantAccessToken: string = '';
 let tokenExpiry: number = 0;
 
 type Status = 'success' | 'warning' | 'error' | 'info';
+
+type NotificationScenario = 'test-summary' | 'locator-review';
+type ReceiveIdType = 'chat_id' | 'open_id';
+type Environment = Record<string, string | undefined>;
+
+export interface NotificationRecipient {
+  receiveId: string;
+  receiveIdType: ReceiveIdType;
+}
+
+/** Resolve each notification scenario to its intentionally separate recipient. */
+export function resolveNotificationRecipient(
+  scenario: NotificationScenario,
+  env: Environment = process.env
+): NotificationRecipient | undefined {
+  if (scenario === 'test-summary' && env.FEISHU_CHAT_ID) {
+    return { receiveId: env.FEISHU_CHAT_ID, receiveIdType: 'chat_id' };
+  }
+
+  if (scenario === 'locator-review' && env.FEISHU_REVIEWER_OPEN_ID) {
+    return { receiveId: env.FEISHU_REVIEWER_OPEN_ID, receiveIdType: 'open_id' };
+  }
+
+  return undefined;
+}
+
+/** Self-healing events stay in the test report unless this opt-in is set. */
+export function shouldSendHealEventNotifications(env: Environment = process.env): boolean {
+  return env.FEISHU_SEND_HEAL_EVENTS === 'true';
+}
 
 // ---------------------------------------------------------------------------
 // Feishu interactive card helpers
@@ -115,7 +145,9 @@ async function sendCard(
   title: string,
   status: Status,
   elements: any[],
-  options: { rethrow?: boolean; retries?: number } = {}
+  recipient: NotificationRecipient,
+  options: { rethrow?: boolean; retries?: number } = {},
+  content?: unknown
 ): Promise<void> {
   const { rethrow = false, retries = 0 } = options;
 
@@ -132,9 +164,9 @@ async function sendCard(
   };
 
   const payload = {
-    receive_id: CHAT_ID,
+    receive_id: recipient.receiveId,
     msg_type: 'interactive',
-    content: JSON.stringify(card),
+    content: JSON.stringify(content ?? card),
   };
 
   const isRetryable = (error: any): boolean => {
@@ -150,7 +182,7 @@ async function sendCard(
       // 每次循环重新取 token：命中缓存几乎零成本；401 失效后能自动重新获取
       const token = await getTenantAccessToken();
       await axios.post(
-        'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+        `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${recipient.receiveIdType}`,
         payload,
         {
           headers: {
@@ -232,7 +264,8 @@ async function getTenantAccessToken(): Promise<string> {
  * Send a single heal event as an interactive card.
  */
 async function sendHealNotification(event: HealEvent): Promise<void> {
-  if (!APP_ID || !APP_SECRET || !CHAT_ID) {
+  const recipient = resolveNotificationRecipient('test-summary');
+  if (!APP_ID || !APP_SECRET || !recipient) {
     console.log(`[Feishu] Skipping notification (not configured): ${event.type}`);
     return;
   }
@@ -303,7 +336,7 @@ async function sendHealNotification(event: HealEvent): Promise<void> {
   if (event.jenkinsUrl) actions.push(linkButton('🔗 查看 Jenkins', event.jenkinsUrl, 'primary'));
   if (actions.length > 0) elements.push({ tag: 'action', actions });
 
-  await sendCard(event.type, status, elements);
+  await sendCard(event.type, status, elements, recipient);
 }
 
 /**
@@ -341,7 +374,12 @@ async function handleHealEvent(event: HealEvent): Promise<void> {
  * Call this once during test setup (e.g., globalSetup)
  */
 export function initFeishuBot(): void {
-  if (!APP_ID || !APP_SECRET || !CHAT_ID) {
+  if (!shouldSendHealEventNotifications()) {
+    console.log('[Feishu] Heal event notifications disabled; events are kept in the test report');
+    return;
+  }
+
+  if (!APP_ID || !APP_SECRET || !resolveNotificationRecipient('test-summary')) {
     console.log('[Feishu] Feishu bot is disabled (missing configuration)');
     return;
   }
@@ -384,13 +422,20 @@ export interface CaseSummaryOptions {
   passed: number;
   failed: number;
   skipped: number;
-  healTriggeredCount: number;
-  healSuccessCount: number;
-  healFailedCount: number;
-  failedCases: FailedCaseSummary[];
-  healEvents: HealEventSummary[];
-  reportUrl?: string;
-  reportArchiveUrl?: string;
+}
+
+export function buildCaseSummaryElements(opts: CaseSummaryOptions): any[] {
+  return [
+    {
+      tag: 'div',
+      fields: [
+        field('测试总数', String(opts.total)),
+        field('通过', String(opts.passed)),
+        field('失败', String(opts.failed)),
+        field('跳过', String(opts.skipped)),
+      ],
+    },
+  ];
 }
 
 /**
@@ -398,88 +443,15 @@ export interface CaseSummaryOptions {
  * Called by FeishuReporter.onEnd() in reporters/feishu-reporter.ts
  */
 export async function sendCaseSummaryNotification(opts: CaseSummaryOptions): Promise<void> {
-  if (!APP_ID || !APP_SECRET || !CHAT_ID) {
+  const recipient = resolveNotificationRecipient('test-summary');
+  if (!APP_ID || !APP_SECRET || !recipient) {
     console.log(`[Feishu] Skipping summary notification (not configured): ${opts.title}`);
     return;
   }
 
-  const elements: any[] = [];
+  const elements = buildCaseSummaryElements(opts);
 
-  // --- Test result stats (2x2 grid) ---
-  elements.push({
-    tag: 'div',
-    fields: [
-      field('测试总数', String(opts.total)),
-      field('通过', String(opts.passed)),
-      field('失败', String(opts.failed)),
-      field('跳过', String(opts.skipped)),
-    ],
-  });
-
-  elements.push(hr());
-
-  // --- Self-healing stats ---
-  elements.push({
-    tag: 'div',
-    fields: [
-      field('🔧 自愈触发', String(opts.healTriggeredCount)),
-      field('✅ 自愈成功', String(opts.healSuccessCount)),
-      field('❌ 自愈失败', String(opts.healFailedCount)),
-    ],
-  });
-
-  // --- Failed cases detail ---
-  if (opts.failedCases.length > 0) {
-    elements.push(hr());
-    elements.push(divMd(`**🧨 失败用例明细（共 ${opts.failedCases.length} 个）**`));
-    const failedBlocks: string[] = [];
-    opts.failedCases.slice(0, 10).forEach((item, index) => {
-      failedBlocks.push(
-        `${index + 1}. **${escapeMdInline(truncate(item.title, 80))}**\n` +
-          `📁 ${escapeMd(item.file)}\n` +
-          `🏷️ ${escapeMd(item.status)}\n` +
-          `💬 ${escapeMd(truncate(item.error || '-', 120))}`
-      );
-    });
-    elements.push(divMd(failedBlocks.join('\n\n')));
-    if (opts.failedCases.length > 10) {
-      elements.push(noteMd(`…还有 ${opts.failedCases.length - 10} 个失败用例未展示，详见报告`));
-    }
-  }
-
-  // --- AI self-heal detail ---
-  if (opts.healEvents.length > 0) {
-    const notable = opts.healEvents.filter(
-      (e) => e.type === 'HEAL_SUCCESS' || e.type === 'HEAL_FAILED'
-    );
-    if (notable.length > 0) {
-      elements.push(hr());
-      elements.push(divMd(`**🤖 AI 自愈明细（共 ${notable.length} 条）**`));
-      const healBlocks: string[] = [];
-      notable.slice(0, 10).forEach((item, index) => {
-        const icon = item.type === 'HEAL_SUCCESS' ? '✅' : '❌';
-        healBlocks.push(
-          `${index + 1}. ${icon} ${escapeMd(item.input.description)}\n` +
-            `🔍 ${code(item.input.originalLocator)} → ${code(item.output?.locator || '-')}\n` +
-            `🎯 ${escapeMd(item.input.action)}`
-        );
-      });
-      elements.push(divMd(healBlocks.join('\n\n')));
-    }
-  }
-
-  // --- Action button ---
-  if (opts.reportUrl) {
-    elements.push(hr());
-    const actions: any[] = [linkButton('📄 查看完整测试报告', opts.reportUrl, 'primary')];
-    // 浏览器内 HTML 报告受 Jenkins CSP 限制可能白屏，提供压缩包下载兜底（解压后本地打开 index.html）
-    if (opts.reportArchiveUrl) {
-      actions.push(linkButton('⬇️ 下载报告压缩包', opts.reportArchiveUrl, 'default'));
-    }
-    elements.push({ tag: 'action', actions });
-  }
-
-  await sendCard(opts.title, opts.status, elements, { retries: 2 });
+  await sendCard(opts.title, opts.status, elements, recipient, { retries: 2 });
 }
 
 /**
@@ -521,9 +493,101 @@ export interface ReviewCardOptions {
   reportArchiveUrl?: string;
 }
 
+export interface ReviewTemplateProposal {
+  index: number;
+  element_name: string;
+  test_name: string;
+  locator_key: string;
+  action: string;
+  old_locator: string;
+  new_locator: string;
+  confidence: string;
+  reason: string;
+  approve_value: { action: 'approve_locator'; proposalId: string; token: string };
+  reject_value: { action: 'reject_locator'; proposalId: string; token: string };
+}
+
+export interface ReviewTemplateVariables {
+  review_title: string;
+  review_summary: string;
+  proposal_items: ReviewTemplateProposal[];
+}
+
+/** Build the variables expected by the Feishu review-card template. */
+export function buildReviewTemplateVariables(
+  opts: ReviewCardOptions,
+  callbackToken = process.env.HEALER_CALLBACK_TOKEN || ''
+): ReviewTemplateVariables {
+  const pending = opts.proposals.filter(
+    (proposal) => proposal.status === 'pending' && proposal.newLocator
+  );
+
+  return {
+    review_title: opts.title,
+    review_summary:
+      `测试 ${opts.total} 项：通过 ${opts.passed}，失败 ${opts.failed}，跳过 ${opts.skipped}。` +
+      `待审核定位器 ${pending.length} 项。`,
+    proposal_items: pending.slice(0, 10).map((proposal, index) => {
+      const confidence =
+        typeof proposal.confidence === 'number' && proposal.confidence >= 0 && proposal.confidence <= 1
+          ? `${(proposal.confidence * 100).toFixed(0)}%`
+          : '-';
+
+      return {
+        index: index + 1,
+        element_name: proposal.elementName,
+        test_name: proposal.testName || '-',
+        locator_key: proposal.locatorKey,
+        action: proposal.action,
+        old_locator: proposal.oldLocator,
+        new_locator: proposal.newLocator || '-',
+        confidence,
+        reason: proposal.reason || '-',
+        approve_value: {
+          action: 'approve_locator',
+          proposalId: proposal.id,
+          token: callbackToken,
+        },
+        reject_value: {
+          action: 'reject_locator',
+          proposalId: proposal.id,
+          token: callbackToken,
+        },
+      };
+    }),
+  };
+}
+
+export function buildReviewTemplateContent(
+  opts: ReviewCardOptions,
+  templateId: string,
+  callbackToken = process.env.HEALER_CALLBACK_TOKEN || ''
+): Record<string, unknown> {
+  return {
+    type: 'template',
+    data: {
+      template_id: templateId,
+      template_variable: buildReviewTemplateVariables(opts, callbackToken),
+    },
+  };
+}
+
 export async function sendReviewCard(opts: ReviewCardOptions): Promise<void> {
-  if (!APP_ID || !APP_SECRET || !CHAT_ID) {
+  const recipient = resolveNotificationRecipient('locator-review');
+  if (!APP_ID || !APP_SECRET || !recipient) {
     console.log(`[Feishu] Skipping review card (not configured): ${opts.title}`);
+    return;
+  }
+
+  if (REVIEW_CARD_TEMPLATE_ID) {
+    await sendCard(
+      opts.title,
+      opts.status,
+      [],
+      recipient,
+      { retries: 2 },
+      buildReviewTemplateContent(opts, REVIEW_CARD_TEMPLATE_ID)
+    );
     return;
   }
 
@@ -620,7 +684,7 @@ export async function sendReviewCard(opts: ReviewCardOptions): Promise<void> {
     elements.push({ tag: 'action', actions });
   }
 
-  await sendCard(opts.title, opts.status, elements, { retries: 2 });
+  await sendCard(opts.title, opts.status, elements, recipient, { retries: 2 });
 }
 
 /**
@@ -631,10 +695,11 @@ export async function sendFeishuMessage(
   content: string,
   status: 'info' | 'success' | 'warning' | 'error' = 'info'
 ): Promise<void> {
-  if (!APP_ID || !APP_SECRET || !CHAT_ID) {
+  const recipient = resolveNotificationRecipient('test-summary');
+  if (!APP_ID || !APP_SECRET || !recipient) {
     console.log(`[Feishu] Skipping message (not configured): ${title}`);
     return;
   }
 
-  await sendCard(title, status, [divMd(content)]);
+  await sendCard(title, status, [divMd(content)], recipient);
 }
