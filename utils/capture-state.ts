@@ -1,12 +1,20 @@
 /**
- * State Capture — Extract 3-source DOM snapshot for AI context
- * Sources: ARIA attributes, visible interactive elements, error context
+ * State Capture — 给 AI 自愈提供页面上下文。
+ *
+ * 设计目标：让模型看到“足够生成 Locator 的信息”，而不是把整页 DOM 原样塞进去。
+ * 因此这里只抓四类信息：
+ * 1. ARIA 元素：role/aria-label 等语义化信息，适合生成稳定 Locator；
+ * 2. 可见交互元素：button/input/link/menu item 等真实可操作目标；
+ * 3. 简化 DOM 树：用于辅助理解页面结构，但限制深度和子节点数量；
+ * 4. 可见错误信息：帮助模型理解当前页面是否处于异常状态。
+ *
+ * 注意：本文件只负责采集页面状态，不负责调用 AI，也不负责判断候选 Locator 是否可用。
  */
 
 import { Page } from '@playwright/test';
 
 export interface DOMSnapshot {
-  /** ARIA elements with labels/descriptions */
+  /** 页面上的语义化节点。优先用于生成 role/aria 相关 Locator。 */
   ariaElements: Array<{
     tag: string;
     role?: string;
@@ -14,7 +22,7 @@ export interface DOMSnapshot {
     description?: string;
   }>;
 
-  /** Visible interactive elements (buttons, inputs, links, etc.) */
+  /** 当前页面可见且可能被操作的元素，例如按钮、链接、输入框、Antd 菜单项。 */
   interactiveElements: Array<{
     tag: string;
     text?: string;
@@ -24,16 +32,18 @@ export interface DOMSnapshot {
     type?: string;
   }>;
 
-  /** Current document structure (simplified tree) */
+  /** 被截断后的 DOM 结构，用于辅助理解上下级关系。 */
   documentTree: string;
 
-  /** Any visible error messages or warnings */
+  /** 页面上可见的错误、警告、通知信息。 */
   visibleErrors: string[];
 }
 
 /**
- * Capture current page DOM snapshot for AI healing
- * Extracts up to 100 elements max to avoid token bloat
+ * 抓取当前页面快照。
+ *
+ * 采集数量被刻意限制：ARIA 最多 50 个，可交互元素最多 50 个，DOM 树最多 5 层，
+ * 目的是控制 token 成本，并降低无关节点对模型判断的干扰。
  */
 export async function capturePageState(page: Page): Promise<DOMSnapshot> {
   const snapshot = await page.evaluate(() => {
@@ -95,7 +105,7 @@ export async function capturePageState(page: Page): Promise<DOMSnapshot> {
       visibleErrors: [],
     };
 
-    // 1. Capture ARIA elements
+    // 1. 语义化元素：role/aria-label 往往比 class、层级 CSS 更稳定。
     const ariaElements = document.querySelectorAll('[role], [aria-label], [aria-describedby]');
     Array.from(ariaElements).slice(0, 50).forEach((el) => {
       const tag = el.tagName.toLowerCase();
@@ -111,7 +121,8 @@ export async function capturePageState(page: Page): Promise<DOMSnapshot> {
       });
     });
 
-    // 2. Capture visible interactive elements
+    // 2. 可交互元素：AI 主要从这里选择候选 Locator。
+    // Antd 项目中常见 .ant-menu-item / .ant-btn，因此在原生选择器之外额外收集。
     const selectors = [
       'button',
       'a[href]',
@@ -157,10 +168,10 @@ export async function capturePageState(page: Page): Promise<DOMSnapshot> {
       });
     });
 
-    // 3. Capture document tree (simplified)
+    // 3. 简化 DOM 树：提供结构感，但避免全量 DOM 造成 token 膨胀。
     result.documentTree = captureSimplifiedTree(document.body);
 
-    // 4. Capture visible errors/warnings
+    // 4. 可见错误/警告：如果页面处于异常状态，错误文案可以帮助判断原 Locator 失败原因。
     const errorSelectors = [
       '.ant-alert',
       '.error',
@@ -189,7 +200,9 @@ export async function capturePageState(page: Page): Promise<DOMSnapshot> {
 }
 
 /**
- * Format snapshot for logging/debugging
+ * 将 DOMSnapshot 格式化为便于日志查看的短文本。
+ *
+ * 这是调试/报告辅助函数，不参与 AI prompt 的主格式化；healer-core 会额外压缩 interactiveElements。
  */
 export function formatSnapshot(snapshot: DOMSnapshot): string {
   const lines: string[] = [];
