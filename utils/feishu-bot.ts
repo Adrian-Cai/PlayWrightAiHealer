@@ -427,6 +427,7 @@ export interface CaseSummaryOptions {
   healSuccessCount?: number;
   healFailedCount?: number;
   pendingCount?: number;
+  durationMs?: number;
   reportUrl?: string;
   reportArchiveUrl?: string;
 }
@@ -484,9 +485,20 @@ export interface CaseSummaryTemplateVariables {
   heal_failed: string;
   pending_count: string;
   review_pending: string;
+  duration_ms: string;
+  duration: string;
   report_url: string;
   report_archive_url: string;
   generated_at: string;
+}
+
+/** Format a millisecond duration for compact display in a summary card. */
+export function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return minutes > 0 ? `${minutes}m${seconds}s` : `${seconds}s`;
 }
 
 /** Build variables for the Feishu test-result template card. */
@@ -495,6 +507,7 @@ export function buildCaseSummaryTemplateVariables(opts: CaseSummaryOptions): Cas
   const healSuccess = String(opts.healSuccessCount ?? 0);
   const healFailed = String(opts.healFailedCount ?? 0);
   const pending = String(opts.pendingCount ?? 0);
+  const durationMs = Math.max(0, opts.durationMs ?? 0);
   const now = new Date().toISOString().replace('T', ' ').split('.')[0];
 
   return {
@@ -515,6 +528,8 @@ export function buildCaseSummaryTemplateVariables(opts: CaseSummaryOptions): Cas
     heal_failed: healFailed,
     pending_count: pending,
     review_pending: pending,
+    duration_ms: String(durationMs),
+    duration: formatDuration(durationMs),
     report_url: opts.reportUrl || '',
     report_archive_url: opts.reportArchiveUrl || '',
     generated_at: now,

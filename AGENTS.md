@@ -56,6 +56,7 @@ tests/*.spec.ts
 | `FEISHU_APP_ID` | 飞书需要 | 飞书自建应用 App ID |
 | `FEISHU_APP_SECRET` | 飞书需要 | 飞书自建应用 Secret |
 | `FEISHU_CHAT_ID` | 否 | 测试汇总卡片发送到群聊 |
+| `FEISHU_SUMMARY_CARD_TEMPLATE_ID` | 否 | 测试汇总卡模板 ID；默认 `AAqWfnE72DGps` |
 | `FEISHU_REVIEWER_OPEN_ID` | 否 | 待审核 Locator 卡片私聊接收人 |
 | `FEISHU_REVIEW_CARD_TEMPLATE_ID` | 否 | 飞书审核卡模板 ID；不配置则使用内置卡片 |
 | `FEISHU_SEND_HEAL_EVENTS` | 否 | 设为 `true` 才逐条推送自愈事件；默认只写 JSONL |

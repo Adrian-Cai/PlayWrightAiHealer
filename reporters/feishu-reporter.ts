@@ -105,6 +105,7 @@ class FeishuReporter implements Reporter {
       healSuccessCount,
       healFailedCount,
       pendingCount,
+      durationMs: result.duration,
       reportUrl,
       reportArchiveUrl,
     });

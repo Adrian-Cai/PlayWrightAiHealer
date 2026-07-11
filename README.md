@@ -186,6 +186,10 @@ DEEPSEEK_API_KEY=你的 DeepSeek API Key
 FEISHU_APP_ID=你的飞书应用 App ID
 FEISHU_APP_SECRET=你的飞书应用 App Secret
 FEISHU_CHAT_ID=你的飞书群聊 Chat ID
+# 可选；留空使用默认测试汇总模板 AAqWfnE72DGps
+FEISHU_SUMMARY_CARD_TEMPLATE_ID=AAqWfnE72DGps
+# 可选；Locator 审批卡私聊负责人
+FEISHU_REVIEWER_OPEN_ID=负责人的 Open ID
 ```
 
 说明：
@@ -193,7 +197,9 @@ FEISHU_CHAT_ID=你的飞书群聊 Chat ID
 * `DEEPSEEK_API_KEY`：用于调用 AI 模型生成候选定位器；
 * `FEISHU_APP_ID`：飞书应用 ID；
 * `FEISHU_APP_SECRET`：飞书应用密钥；
-* `FEISHU_CHAT_ID`：飞书通知发送到的群聊 ID。
+* `FEISHU_CHAT_ID`：测试汇总卡发送到的目标群真实 `chat_id`；私聊也可能是 `oc_` 前缀，不能仅凭前缀判断；
+* `FEISHU_SUMMARY_CARD_TEMPLATE_ID`：测试汇总卡模板 ID，未配置时使用代码默认模板；
+* `FEISHU_REVIEWER_OPEN_ID`：Locator 审批卡私聊接收人，不参与测试汇总卡路由。
 
 如果暂时不配置飞书相关变量，项目会跳过飞书通知，不影响本地测试执行。
 
